@@ -44,13 +44,15 @@ cap.holds            = KIND_IPC_ENDPOINT
 #   declaration for any KIND_SURFACE id a service quotes on the wire does
 #   not need a caps.decl edit.
 cap.holds            = KIND_SURFACE
-# KIND_INPUT_EVENT: forward-compat placeholder for the real focus/input-
-#   routing capability this service will mint once M3-001 lands. The
-#   design doc (r102-user-plan.md §7.2.2) names this capability
-#   KIND_INPUT_FOCUS; KIND_INPUT_EVENT is declared here as the wave-FF
-#   working name pending that naming freeze -- see this repo's STATUS.md
-#   "naming risk" note. No mint occurs at v0.5.0 (M1..M2 scope only).
-cap.holds            = KIND_INPUT_EVENT
+# KIND_INPUT_FOCUS (design/graphics/r102-user-plan.md §7.2.2): the real
+#   focus/input-routing capability, minted by src/focus.pdx's
+#   focus_mint (R102.M3-001, #7). Reconciles this repo's own STATUS.md
+#   "naming risk" note (v0.5.0 declared the wave-FF working name
+#   KIND_INPUT_EVENT here; §7.2.2's real name is KIND_INPUT_FOCUS).
+#   The numeric ordinal (0x1BA, focus.pdx's SWM_FOCUS_KIND_INPUT_FOCUS)
+#   is a locally-declared placeholder pending the authoritative R101
+#   freeze -- see that module's header.
+cap.holds            = KIND_INPUT_FOCUS
 
 # ------------------------------------------------------------------
 # IPC endpoints this service REGISTERS on svc_broker
@@ -97,3 +99,13 @@ reply.ERROR                     = 0xFF
 #   svc.compositor.wm  WM_SET_FOCUS    = 0x11  -- ridden by the focus-
 #                                                 outline decoration
 #                                                 directive (src/decoration.pdx)
+#   svc.compositor.wm  WM_CLOSE_WINDOW = 0x12  -- svc-wm's OWN forward-
+#                                                 declared close directive
+#                                                 (src/tiling.pdx,
+#                                                 tiling_focus_close,
+#                                                 R102.M2-003 #6) -- NOT
+#                                                 yet frozen in
+#                                                 svc-compositor's own
+#                                                 caps.decl; see
+#                                                 src/tiling.pdx's module
+#                                                 header "Wave VV addendum".

@@ -1,4 +1,4 @@
-# svc-wm v0.5.0 -- release manifest (source form)
+# svc-wm v0.6.0 -- release manifest (source form)
 #
 # This is the human-readable source form of `manifest.pdxsig`. At a
 # signed release, the release tool at pkgs.paideia-os mirror-push time
@@ -10,8 +10,8 @@
 # the ML-DSA-65 secret key. Format mirrors svc-compositor's own
 # `release/manifest.pdxsig.txt` (this org's Wave F/Y closer template).
 #
-# v0.5.0 is an M2-close scaffold checkpoint, NOT the dual-signed 1.0.0
-# release this repo's README documents as the M5 milestone target
+# v0.6.0 is an M2/M3-partial scaffold checkpoint, NOT the dual-signed
+# 1.0.0 release this repo's README documents as the M5 milestone target
 # ("Repo shape mirrors R100 satellites: ... dual-signed manifest.pdxsig
 # at 1.0.0"). This source-form manifest lands at repo root starting at
 # M1-001 (#1) per that milestone's scaffold ask, and is refreshed at
@@ -26,16 +26,16 @@
 format-version:      1
 manifest-schema:     paideia-manifest-pdxsig@1
 package-name:        svc-wm
-package-version:     0.5.0
-package-release:     R102-M2
+package-version:     0.6.0
+package-release:     R102-M2c-M3a
 package-kind:        service
 package-license:     MIT
 source-repo:         https://github.com/paideia-os/svc-wm
-source-commit:       <TAG-v0.5.0-COMMIT-SHA>   # release tool fills in
-source-tag:          v0.5.0
+source-commit:       <TAG-v0.6.0-COMMIT-SHA>   # release tool fills in
+source-tag:          v0.6.0
 
 # ---------------------------------------------------------------
-# Artifact set -- every file the v0.5.0 tag ships. Hash discipline is
+# Artifact set -- every file the v0.6.0 tag ships. Hash discipline is
 # BLAKE3-256, upper 32 bytes rendered as 64 hex chars. Order is stable
 # (lexicographic within each section) so the concatenated hash-input is
 # reproducible across signers.
@@ -45,6 +45,7 @@ source-tag:          v0.5.0
 src/main.pdx                              blake3-256 = <BLAKE3-main.pdx>
 src/tiling.pdx                            blake3-256 = <BLAKE3-tiling.pdx>
 src/decoration.pdx                        blake3-256 = <BLAKE3-decoration.pdx>
+src/focus.pdx                             blake3-256 = <BLAKE3-focus.pdx>
 
 [artifacts.tests]
 tests/README.md                           blake3-256 = <BLAKE3-tests-README.md>
@@ -69,7 +70,7 @@ CHANGELOG.md                              blake3-256 = <BLAKE3-CHANGELOG.md>
 # ---------------------------------------------------------------
 
 [depends-on]
-# (empty at v0.5.0 -- no satellite library linkage; svc-wm talks to
+# (empty at v0.6.0 -- no satellite library linkage; svc-wm talks to
 # svc.compositor purely over the kernel IPC substrate, no shared code.)
 
 [not-linked]
@@ -83,13 +84,17 @@ svc-compositor            # IPC peer only (svc.compositor.wm control endpoint)
 
 [substrate]
 paideia-as-toolchain      >= 0.24.0-mldsa65-sign
-kernel-syscall            = sys_write (1), sys_getpid (39), sys_ipc_recv (40),
+kernel-syscall            = sys_write (1), sys_cap_mint (5, ENOSYS at HEAD --
+                            see design/audit/entries/r13-m5-003-syscall-table.md),
+                            sys_getpid (39), sys_ipc_recv (40),
                             sys_ipc_reply (41), sys_ipc_send (42),
                             sys_svc_lookup (43)
 kernel-cap-kind           = KIND_USER (0x190)          # attribution only
 kernel-cap-kind           = KIND_IPC_ENDPOINT (5)
 kernel-cap-kind           = KIND_SURFACE (0x1B8)       # referenced, not minted
-kernel-cap-kind           = KIND_INPUT_EVENT           # placeholder, unminted at 0.5.0
+kernel-cap-kind           = KIND_INPUT_FOCUS (0x1BA)   # local placeholder ordinal;
+                                                        # focus_mint call site real,
+                                                        # blocked on sys_cap_mint ENOSYS
 
 # ---------------------------------------------------------------
 # Signature block -- NOT PERFORMED AT THIS MILESTONE. See

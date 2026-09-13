@@ -1,0 +1,111 @@
+// src/focus.pdx -- svc-wm v0.6.0 (Wave VV: R102.M3-001, #7)
+// Focus module: real KIND_INPUT_FOCUS capability mint.
+//
+// Purpose
+// -------
+// Retires the `KIND_INPUT_EVENT` forward-compat placeholder this repo's
+// `caps.decl` has declared since M1-002 (#2) with a real mint call
+// site. Per design/graphics/r102-user-plan.md §7.2.2 ("KIND_INPUT_FOCUS
+// + focus-routed HID channel"): "A new KIND_INPUT_FOCUS cap the WM
+// mints for the focused window, hands to the compositor" -- "Ops on
+// KIND_INPUT_FOCUS: mint (WM only), revoke, transfer (WM hands to
+// compositor), QUERY_WINDOW_ID."
+//
+// Floor-only sysno (documented kernel gap)
+// -----------------------------------------
+// `sys_cap_mint` is sysno 5 (design/user/syscall-table.md row 5) but is
+// ENOSYS at HEAD per design/audit/entries/r13-m5-003-syscall-table.md:
+// "sys_cap_mint: §C spec is (descriptor:ptr, rights) -> slot; existing
+// Mint.cap_mint takes (kind, target_ptr, rights). Needs
+// descriptor-layout definition. Follow-up filed." `focus_mint` below is
+// the REAL call shape this repo's wave directive calls for -- (kind,
+// target_ptr, rights) in rdi/rsi/rdx, matching the kernel's actual
+// `Mint.cap_mint` signature rather than the not-yet-defined §C
+// descriptor-pointer spec -- against that floor-only sysno. The
+// negative-errno return path (ENOSYS = -38 today) is handled exactly
+// like every other syscall failure in this file, so this body starts
+// minting for real with zero source changes the moment the kernel lands
+// its handler; nothing here is a stub pending a rewrite.
+//
+// KIND_INPUT_FOCUS numeric ordinal (documented placeholder)
+// -----------------------------------------------------------
+// No numeric kind is frozen kernel-side for KIND_INPUT_FOCUS yet (this
+// repo's own STATUS.md "naming risk" note, still open as of v0.5.0).
+// `SWM_FOCUS_KIND_INPUT_FOCUS = 0x1BA` here continues the KIND_SURFACE
+// (0x1B8) / KIND_SURFACE_COMMIT (0x1B9) numbering lineage frozen in
+// design/graphics/r113-m1-substrate.md as the next unclaimed slot in
+// that block -- a locally-declared placeholder, NOT an authoritative
+// freeze, pending the real R101 §7.2.2 assignment. Likewise
+// `SWM_FOCUS_RIGHTS_DEFAULT` is a placeholder observe|invoke mask; no
+// `R_FOCUS_*` rights convention is frozen yet either.
+//
+// Wire hand-off deferred
+// -----------------------
+// §7.2.2 also asks the WM to "hand cap to compositor via WM_SET_FOCUS."
+// `WM_SET_FOCUS = 0x11`'s payload is frozen at exactly
+// `(surface_id, border_rgb, border_width_px)` (design/wire-protocol.md
+// §3); adding a cap-slot field there is a payload-shape change, which
+// this repo's own versioning rule requires shipping as `R102-WM-v1`
+// alongside a `caps.decl` `protocol.version` bump (design/wire-
+// protocol.md header) -- out of scope for this single mint-focused
+// issue. `focus_mint` instead publishes the minted slot into
+// `swm_focus_cap_slot` for that future wire revision (or any other
+// in-process caller, e.g. a later Alt+Tab integration) to read.
+//
+// paideia-as compliance
+// ---------------------
+//   - Module Focus (PascalCase of focus.pdx stem).
+//   - No `test rN,rN`; no `and rN,imm64` on r8-r15; no 2-op `imul`; no
+//     `neg`; no sil/dil/bl byte-register aliases; no Intel dword/qword
+//     ptr immediate-to-memory writes.
+//   - focus_mint takes exactly 1 argument.
+//   - Leaf (only a raw `syscall`, no nested `call`) -- no rsp%16==0
+//     CALL-site obligation.
+//   - Reserved-label discipline: label prefixed `focm_`.
+//
+// Upstream: design/graphics/r102-user-plan.md §4.5 R102.M3-001 / §7.2.2
+// (paideia-os monorepo); this repo's #7; design/wire-protocol.md.
+
+module Focus = structure {
+
+  // Local placeholder KIND_INPUT_FOCUS ordinal -- see module header
+  // "KIND_INPUT_FOCUS numeric ordinal".
+  pub let SWM_FOCUS_KIND_INPUT_FOCUS : u64 = 0x1BA
+
+  // Placeholder rights mask (observe | invoke) -- see module header.
+  pub let SWM_FOCUS_RIGHTS_DEFAULT : u64 = 0x3
+
+  // sys_cap_mint's SC+ ID (design/user/syscall-table.md row 5).
+  pub let SWM_FOCUS_SYS_CAP_MINT : u64 = 5
+
+  // Last cap slot minted by focus_mint (0 = none minted yet; fresh-boot
+  // default -- slot 0 is never a valid mint result at this substrate).
+  // Published for a future WM_SET_FOCUS wire revision, or any other
+  // in-process caller, to read. See module header "Wire hand-off
+  // deferred".
+  pub let mut swm_focus_cap_slot : u64 = 0
+
+  // focus_mint(surface_id) -> cap_slot (>=0) | -errno (currently always
+  // -ENOSYS at HEAD -- see module header "Floor-only sysno").
+  pub let focus_mint : (u64) -> u64 !{mem, sysreg} @{} =
+    fn (surface_id: u64) -> unsafe {
+      effects: {mem, sysreg},
+      capabilities: {},
+      justification: "R102.M3-001 (#7) FocusMint. Stash the incoming surface_id (rdi) into rsi BEFORE rdi is reassigned to the mint's own kind argument -- Mint.cap_mint's real kernel-side shape is (kind, target_ptr, rights), so rdi=kind (SWM_FOCUS_KIND_INPUT_FOCUS, 0x1BA placeholder), rsi=target_ptr (the surface_id being focused), rdx=rights (SWM_FOCUS_RIGHTS_DEFAULT, 0x3 placeholder). rax=5 (SWM_FOCUS_SYS_CAP_MINT); syscall. Negative rax (ENOSYS at HEAD per the documented kernel gap, or any future real -errno) passes straight through unmodified -- no memory write on failure, so swm_focus_cap_slot only ever reflects the last SUCCESSFUL mint. On success, publish the returned cap_slot to swm_focus_cap_slot and return it. Leaf (single raw `syscall`, no nested `call`) -- no push/pop needed despite the rdi/rsi/rdx churn (all caller-save under SysV; SYSCALL clobbers rcx/r11 only). Label prefixed focm_.",
+      block: {
+        mov rsi, rdi;                       // target_ptr = surface_id
+        mov rdi, 0x1BA;                     // kind = SWM_FOCUS_KIND_INPUT_FOCUS
+        mov rdx, 0x3;                       // rights = SWM_FOCUS_RIGHTS_DEFAULT
+        mov rax, 5;                         // SC+ ID 5 = sys_cap_mint
+        syscall;
+        cmp rax, 0;
+        jl focm_fail;
+        mov [rip + swm_focus_cap_slot], rax;
+        ret;
+
+      focm_fail:
+        ret;
+      }
+    }
+
+}

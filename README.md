@@ -27,15 +27,16 @@ Per the plan, this repo lands across five milestones:
 - **M5** — signed 1.0.0 release
 
 Every issue is filed against one of these five milestones; see the Issues
-tab. **M1 and M2 landed at v0.5.0** — see `STATUS.md` for the per-issue
-checklist.
+tab. **M1 and M2 landed at v0.5.0; M2-003 and M3-001 landed at v0.6.0**
+— see `STATUS.md` for the per-issue checklist.
 
 ## Scaffolding
 
-As of v0.5.0, M1 (repo scaffold, `caps.decl`, frozen wire protocol,
-connect + register) and M2 (tiling policy, focus outline decoration)
+As of v0.6.0, M1 (repo scaffold, `caps.decl`, frozen wire protocol,
+connect + register), M2 (tiling policy, focus outline decoration,
+Alt+Tab cycle, Alt+F4 close), and M3-001 (real `KIND_INPUT_FOCUS` mint)
 have landed — see `STATUS.md` for the per-milestone checklist and
-`CHANGELOG.md` for the full v0.5.0 closer. Repo shape mirrors R100
+`CHANGELOG.md` for the full v0.6.0 closer. Repo shape mirrors R100
 satellites: `manifest.pdxsig` + `caps.decl` at root, `src/` module tree,
 `tests/`, a dual-signed `manifest.pdxsig` refresh at the eventual 1.0.0
 release.

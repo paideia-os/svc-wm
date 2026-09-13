@@ -192,10 +192,21 @@ svc-wm rides two ordinals already frozen by `svc-compositor`'s own
   border_width_px:u64`, padded to 56 bytes. `border_width_px = 0`
   un-decorates; `border_width_px = 2` with `border_rgb = 0x00A0FF`
   decorates.
+- **`WM_CLOSE_WINDOW = 0x12`** -- carries svc-wm's Alt+F4 close directive
+  (`src/tiling.pdx`, `tiling_focus_close`, R102.M2-003 #6):
+  `surface_id:u64`, padded to 56 bytes. Unlike the two ordinals above,
+  this one is **svc-wm's OWN forward declaration**, not yet frozen in
+  svc-compositor's `caps.decl` (v1.1.0 there declares only
+  `0x01/0x02/0x10/0x11/0x20..0x23`). The frame ships at the real wire
+  shape today so no further svc-wm change is needed once the peer
+  freezes it; see `src/tiling.pdx`'s module header "Wave VV addendum"
+  for the full documented-risk rationale.
 
-These are NOT svc-wm's own frozen ordinals (they belong to
-svc-compositor's protocol) and are not re-declared in this repo's
-`caps.decl`.
+`WM_PLACE_WINDOW` and `WM_SET_FOCUS` are NOT svc-wm's own frozen
+ordinals (they belong to svc-compositor's protocol) and are not
+re-declared in this repo's `caps.decl`; `WM_CLOSE_WINDOW` is listed here
+for audit-trail purposes even though it is svc-wm's own not-yet-frozen
+proposal, since it rides the same `svc.compositor.wm` control endpoint.
 
 ## 4. Milestone provenance
 
@@ -206,3 +217,9 @@ svc-compositor's protocol) and are not re-declared in this repo's
   `svc.compositor`.
 - M2-001 (#4): `src/tiling.pdx` SURFACE_MOVE emission.
 - M2-002 (#5): `src/decoration.pdx` WM_SET_FOCUS decoration emission.
+- M2-003 (#6): `src/main.pdx` Alt+Tab/Alt+F4 dispatcher;
+  `src/tiling.pdx` `tiling_focus_advance`/`tiling_focus_close` +
+  forward-declared `WM_CLOSE_WINDOW` emission.
+- M3-001 (#7): `src/focus.pdx` real `KIND_INPUT_FOCUS` mint
+  (`sys_cap_mint`, floor-only sysno 5 pending the documented kernel
+  arity-mismatch fix).

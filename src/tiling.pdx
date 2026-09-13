@@ -58,6 +58,32 @@
 //
 // Upstream: design/graphics/r102-user-plan.md §4.5 R102.M2-001
 // (paideia-os monorepo); this repo's #4; design/wire-protocol.md §3.
+//
+// Wave VV addendum (R102.M2-003, #6)
+// -----------------------------------
+// `tiling_focus_advance` and `tiling_focus_close` extend this module
+// with the Alt+Tab / Alt+F4 policy `src/main.pdx`'s dispatcher (#6)
+// drives. Both stay inside this module's own dense packed-array
+// discipline (no new data structure): a single `swm_tile_focus_index`
+// slot into the existing `swm_tile_ids`/`swm_tile_count` pair.
+//
+// `tiling_focus_close` additionally emits `SWM_OUT_WM_CLOSE_WINDOW`
+// (0x12) to `svc.compositor.wm` -- **NOT** a frozen ordinal in
+// svc-compositor's own `caps.decl` (v1.1.0 there declares only
+// `0x01/0x02/0x10/0x11/0x20..0x23`, no `0x12`). This is svc-wm's own
+// forward-declared request, following the exact "documented risk"
+// posture `src/main.pdx`'s module header already sets for the
+// same-endpoint reply assumption: the frame is well-formed and sent at
+// the real wire shape (64-byte fixed frame, same as `WM_PLACE_WINDOW`/
+// `WM_SET_FOCUS`) so this call site needs no further change once
+// svc-compositor freezes `request.WM_CLOSE_WINDOW = 0x12` on its side;
+// until then, an unrecognized opcode at the peer is expected to be a
+// silent no-op at the transport level (the send itself still succeeds
+// or fails on ordinary IPC-delivery grounds, unrelated to whether the
+// peer understands the opcode) -- so svc-wm proceeds to detach its OWN
+// local tiling state unconditionally on send success, since that half
+// is entirely within this service's own authority regardless of the
+// peer's rollout schedule.
 
 module Tiling = structure {
 
@@ -79,6 +105,10 @@ module Tiling = structure {
   // rides this ordinal on the `svc.compositor.wm` control endpoint.
   pub let SWM_OUT_SURFACE_MOVE : u64 = 0x10
 
+  // svc-wm's OWN forward-declared close ordinal -- NOT yet frozen in
+  // svc-compositor's caps.decl. See module header "Wave VV addendum".
+  pub let SWM_OUT_WM_CLOSE_WINDOW : u64 = 0x12
+
   pub let swm_wm_ep_name     : [u8; 16] = "svc.compositor\0\0"
   pub let swm_wm_ep_name_len : u64      = 14
 
@@ -86,8 +116,17 @@ module Tiling = structure {
   pub let mut swm_tile_count : u64       = 0
   pub let mut swm_tile_geom  : [u64; 32] = uninit @align(8)   // 8 rows x (x,y,w,h)
 
+  // 0-based index into swm_tile_ids[0..swm_tile_count) of the currently
+  // Alt+Tab-focused surface. Meaningless when swm_tile_count == 0
+  // (fresh-boot / all-detached default is 0, re-clamped on every
+  // tiling_focus_close per that function's own guard).
+  pub let mut swm_tile_focus_index : u64 = 0
+
   // 64-byte SURFACE_MOVE frame scratch, reused per emitted surface.
   pub let mut swm_move_frame_buf : [u8; 64] = uninit @align(8)
+
+  // 64-byte WM_CLOSE_WINDOW frame scratch (tiling_focus_close, #6).
+  pub let mut swm_close_frame_buf : [u8; 64] = uninit @align(8)
 
   // tiling_attach(surface_id) -> 0 | SWM_TILE_ERR_DUP | SWM_TILE_ERR_FULL
   pub let tiling_attach : (u64) -> u64 !{mem} @{} =
@@ -363,6 +402,144 @@ module Tiling = structure {
         pop r12;
         pop rbx;
         mov rax, 0xFFFFFFFFFFFFFFFB;
+        ret;
+      }
+    }
+
+  // tiling_focus_advance() -> new focused surface_id | SWM_TILE_ERR_NOTFOUND
+  // Advances swm_tile_focus_index modulo swm_tile_count (wraps to 0) and
+  // returns the surface_id it now points at. #6 (R102.M2-003).
+  pub let tiling_focus_advance : () -> u64 !{mem} @{} =
+    fn () -> unsafe {
+      effects: {mem}, capabilities: {},
+      justification: "R102.M2-003 (#6) TilingFocusAdvance. count==0 -> SWM_TILE_ERR_NOTFOUND (nothing to focus). Otherwise: read the current index, add 1, and if that no longer fits below count wrap it to 0 (division-free modulo -- count is bounded by SWM_TILE_MAX (8), so a single compare-and-clear suffices; no `div`/`idiv`, matching tiling_divide's own module-header rationale for why this repo avoids that mnemonic entirely). Store the new index, then read swm_tile_ids[index] and return it. Register plan: rax=count (then reused as the return value), rcx=index, r10=&swm_tile_ids. Leaf, no push/pop (no nested call). Labels prefixed tfa_.",
+      block: {
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 0;
+        je tfa_empty;
+
+        mov rcx, [rip + swm_tile_focus_index];
+        add rcx, 1;
+        cmp rcx, rax;
+        jl tfa_store;
+        xor rcx, rcx;
+
+      tfa_store:
+        mov [rip + swm_tile_focus_index], rcx;
+        lea r10, [rip + swm_tile_ids];
+        mov rax, [r10 + rcx*8];
+        ret;
+
+      tfa_empty:
+        mov rax, 0xFFFFFFFFFFFFFFFD;
+        ret;
+      }
+    }
+
+  // tiling_focus_close() -> 0 | SWM_TILE_ERR_NOTFOUND | SWM_TILE_ERR_LOOKUP
+  //                          | SWM_TILE_ERR_SEND
+  // Sends SWM_OUT_WM_CLOSE_WINDOW for the currently-focused surface, then
+  // detaches it locally and re-emits tile geometry for whatever remains.
+  // #6 (R102.M2-003). See module header "Wave VV addendum" for the
+  // not-yet-frozen-upstream posture of the close ordinal.
+  pub let tiling_focus_close : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M2-003 (#6) TilingFocusClose. count==0 -> SWM_TILE_ERR_NOTFOUND before any push. Otherwise clamp a possibly-stale swm_tile_focus_index (>= count, e.g. after an out-of-band detach) down to 0, using only caller-save rax/rcx -- no push needed yet. push rbx/r12/r13 (entry rsp%16==8 -> 3 pushes -> %16==0 for the nested `call`s below): r12=surface_id (read from swm_tile_ids[index] BEFORE the pushes' register clobber, into a callee-saved home so it survives the lookup+send syscalls and both nested calls), rbx=cap_slot post-lookup, r13=scratch for the header-pack shl/or sequence (pure padding register otherwise, in the same spirit render.pdx's blit_stub documents -- freely clobbered for scratch since its ORIGINAL value is safely parked on the stack by the push and restored by the matching pop regardless of what happens to the register in between). sys_svc_lookup(swm_wm_ep_name,14; rax=43); negative -> SWM_TILE_ERR_LOOKUP. Zero-fill swm_close_frame_buf (8 qword stores), pack header (op=0x12 SWM_OUT_WM_CLOSE_WINDOW, ver=1, reply_endpoint_id=0, payload_len=56) via shl/or into rax then one qword store (no dword/qword-ptr immediates), write surface_id at payload+0. sys_ipc_send(cap_slot, hdr_va, payload_va, 56; rax=42); negative -> SWM_TILE_ERR_SEND (nothing detached -- the request never left, so local state stays consistent with what the peer has). On send success: `call tiling_detach(r12)` (local bookkeeping proceeds regardless of whether the peer's opcode handling exists yet -- see module header); re-clamp swm_tile_focus_index against the post-detach count (count==0 or index>=count both fold to 0); `call tiling_emit_moves` to re-tile the survivors (best-effort -- its own return is discarded, matching this repo's existing best-effort-refresh posture; a stale-geometry symptom from a failed re-emission is strictly less severe than blocking the close on it). Every exit path pops r13/r12/rbx (reverse order) before returning. Labels prefixed tfc_.",
+      block: {
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 0;
+        je tfc_empty;
+
+        mov rcx, [rip + swm_tile_focus_index];
+        cmp rcx, rax;
+        jl tfc_idx_ok;
+        xor rcx, rcx;
+
+      tfc_idx_ok:
+        push rbx;
+        push r12;
+        push r13;
+
+        lea r10, [rip + swm_tile_ids];
+        mov r12, [r10 + rcx*8];             // surface_id to close
+
+        lea rdi, [rip + swm_wm_ep_name];
+        mov rsi, 14;
+        mov rax, 43;                        // SC+ ID 43 = sys_svc_lookup
+        syscall;
+        cmp rax, 0;
+        jl tfc_lookup_fail;
+        mov rbx, rax;                       // cap_slot
+
+        xor rax, rax;
+        mov [rip + swm_close_frame_buf + 0], rax;
+        mov [rip + swm_close_frame_buf + 8], rax;
+        mov [rip + swm_close_frame_buf + 16], rax;
+        mov [rip + swm_close_frame_buf + 24], rax;
+        mov [rip + swm_close_frame_buf + 32], rax;
+        mov [rip + swm_close_frame_buf + 40], rax;
+        mov [rip + swm_close_frame_buf + 48], rax;
+        mov [rip + swm_close_frame_buf + 56], rax;
+
+        mov rax, 0x12;                      // op = SWM_OUT_WM_CLOSE_WINDOW
+        mov r13, 1;                         // ver = 1
+        shl r13, 8;
+        or rax, r13;
+        mov r13, 56;                        // payload_len = 56
+        shl r13, 32;
+        or rax, r13;
+        mov [rip + swm_close_frame_buf + 0], rax;
+        mov [rip + swm_close_frame_buf + 8], r12;   // surface_id
+
+        mov rdi, rbx;
+        lea rsi, [rip + swm_close_frame_buf];
+        lea rdx, [rip + swm_close_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;                        // SC+ ID 42 = sys_ipc_send
+        syscall;
+        cmp rax, 0;
+        jl tfc_send_fail;
+
+        mov rdi, r12;
+        call tiling_detach;
+
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 0;
+        je tfc_clamp_zero;
+        mov rcx, [rip + swm_tile_focus_index];
+        cmp rcx, rax;
+        jl tfc_reemit;
+
+      tfc_clamp_zero:
+        xor rcx, rcx;
+        mov [rip + swm_tile_focus_index], rcx;
+
+      tfc_reemit:
+        call tiling_emit_moves;             // best-effort re-tile
+
+        pop r13;
+        pop r12;
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      tfc_lookup_fail:
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFFC;
+        ret;
+
+      tfc_send_fail:
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFFB;
+        ret;
+
+      tfc_empty:
+        mov rax, 0xFFFFFFFFFFFFFFFD;
         ret;
       }
     }

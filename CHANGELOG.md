@@ -1,5 +1,68 @@
 # svc-wm — CHANGELOG
 
+## 0.6.0 — 2026-09-13 (Wave VV: M2-003 Alt+Tab/Alt+F4 dispatch, M3-001 real KIND_INPUT_FOCUS mint)
+
+**Minor bump closing the two-issue Wave VV cohort (#6, #7):** the last
+M2 item (Alt+Tab focus cycling + Alt+F4 close) and the first M3 item
+(real `KIND_INPUT_FOCUS` capability mint, retiring the `KIND_INPUT_EVENT`
+placeholder).
+
+### Added
+
+- **`src/main.pdx`** — R102.M2-003 (#6). `Main::main_dispatch(op)`: the
+  decoded-request dispatcher STATUS.md flagged as missing. `ALT_TAB`
+  (0x08) advances focus via `Tiling::tiling_focus_advance`, then updates
+  the decoration outline (`Decoration::decoration_on_focus_change`) and
+  mints a fresh `KIND_INPUT_FOCUS` (`Focus::focus_mint`) for the newly
+  focused surface; `ALT_F4` (0x09) closes the focused surface via
+  `Tiling::tiling_focus_close`. Any other op returns
+  `SWM_MAIN_DISPATCH_UNHANDLED`. Wiring an actual `sys_ipc_recv` server
+  loop on `svc.wm`'s own endpoint that feeds this dispatcher remains
+  open (documented in the module header). Closes #6.
+- **`src/tiling.pdx`** — R102.M2-003 (#6). `tiling_focus_advance`
+  (division-free modulo advance over the existing dense
+  `swm_tile_ids`/`swm_tile_count` pair) and `tiling_focus_close` (sends
+  a forward-declared `WM_CLOSE_WINDOW = 0x12` directive to
+  `svc.compositor.wm`, then detaches locally and re-emits tile geometry
+  for the survivors via `tiling_emit_moves`). `WM_CLOSE_WINDOW` is
+  **NOT yet frozen** in svc-compositor's own `caps.decl` (v1.1.0 there
+  declares only `0x01/0x02/0x10/0x11/0x20..0x23`) — svc-wm ships the
+  real frame today at the documented-risk posture `src/main.pdx`'s own
+  module header already established for the same-endpoint reply
+  assumption. Closes #6 alongside `src/main.pdx`.
+- **`src/focus.pdx`** — R102.M3-001 (#7). New `Focus` module:
+  `focus_mint(surface_id)` issues a real `sys_cap_mint` (sysno 5) call
+  in the kernel's actual `(kind, target_ptr, rights)` shape (not the
+  undefined §C descriptor-pointer spec), publishing the minted slot to
+  `swm_focus_cap_slot`. Floor-only today: sysno 5 is ENOSYS at HEAD per
+  the documented kernel arity-mismatch gap
+  (design/audit/entries/r13-m5-003-syscall-table.md) — the call site is
+  real, not a stub, and starts minting for real with zero source
+  changes once the kernel lands its handler. Retires the
+  `KIND_INPUT_EVENT` placeholder: `caps.decl` now declares
+  `KIND_INPUT_FOCUS` directly (STATUS.md's "naming risk" note,
+  resolved). The numeric ordinal (`0x1BA`) stays a locally-declared
+  placeholder pending the authoritative R101 freeze. Closes #7.
+
+### Changed
+
+- **`caps.decl`** — `KIND_INPUT_EVENT` -> `KIND_INPUT_FOCUS` (naming
+  risk resolution, #7); outbound-ordinal audit-trail block gains the
+  `WM_CLOSE_WINDOW = 0x12` forward declaration (#6).
+- **`design/wire-protocol.md`** — §3 documents `WM_CLOSE_WINDOW = 0x12`
+  and its not-yet-frozen-upstream posture; §4 milestone provenance gains
+  M2-003 (#6) and M3-001 (#7).
+- **`STATUS.md`** — M2-003 and M3-001 marked landed; "Naming risk"
+  section marked resolved; "What v0.6.0 does NOT ship" replaces the
+  v0.5.0 list with the three items still open (server loop wiring,
+  `WM_CLOSE_WINDOW` freeze, `sys_cap_mint` ENOSYS).
+- **`README.md`** — milestone/scaffolding notes updated for the v0.6.0
+  landing.
+- **`manifest.pdxsig`** — artifact set gains `src/focus.pdx`;
+  `package-version`/`package-release` bumped.
+
+Closes paideia-os/svc-wm#6. Closes paideia-os/svc-wm#7.
+
 ## 0.5.0 — 2026-09-13 (Wave FF: M1 scaffold + wire freeze + connect/register, M2 tiling + decoration)
 
 **Minor bump from an unversioned two-file scaffold to a five-issue M1/M2
