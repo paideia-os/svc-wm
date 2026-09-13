@@ -1,0 +1,189 @@
+// src/decoration.pdx -- svc-wm v0.5.0 (Wave FF: R102.M2-002, #5)
+// Decoration module: focus outline decoration.
+//
+// Purpose
+// -------
+// On a focus-change event, request the compositor draw a 2px border
+// (RGB 0x00A0FF) around the newly-focused surface, and un-decorate the
+// previously-focused one. Per this repo's README (Pillar 6 process
+// separation), svc-wm owns the DECORATION POLICY (when/which surface
+// gets a border, what color/width) while svc.compositor owns the pixel
+// MECHANISM (it holds the sole KIND_SURFACE authority, r113-m1-
+// substrate.md) -- so the directive rides svc-compositor's already-
+// frozen `WM_SET_FOCUS` ordinal (0x11, caps.decl v1.1.0) on the
+// `svc.compositor.wm` control endpoint rather than any pixel-level draw
+// call svc-wm itself is not privileged to issue.
+//
+// Un-decoration is a separate, explicit directive (border_width_px = 0)
+// against the previously-focused surface_id, sent before the new
+// decoration directive -- matching the issue's "un-decorate the
+// previously-focused surface" as its own observable step rather than an
+// implicit side effect folded into one combined message.
+//
+// paideia-as compliance
+// ---------------------
+//   - Module Decoration (PascalCase of decoration.pdx stem).
+//   - decoration_send takes exactly 4 curried args (the ">4 curried
+//     args" ceiling this org's encoder hits) -- (cap_slot, surface_id,
+//     border_rgb, border_width_px).
+//   - No `test rN,rN`; no `and rN,imm64` on r8-r15; no 2-op `imul`;
+//     no `neg`; no byte-register aliases; no Intel dword/qword ptr
+//     immediate-to-memory writes.
+//   - decoration_send is a leaf (only a raw `syscall`, no nested
+//     `call`) so it carries no rsp%16==0 CALL-site obligation itself;
+//     decoration_on_focus_change pushes 3 callee-saved registers
+//     before its first nested `call decoration_send` (entry rsp%16==8
+//     -> 3 pushes -> %16==0), and both `call` sites in that function
+//     sit at the same stack depth (only raw syscalls run in between),
+//     so the same alignment holds for the second call unconditionally.
+//   - Reserved-label discipline: labels prefixed `sdc_` (send) and
+//     `dfc_` (on_focus_change).
+//
+// Upstream: design/graphics/r102-user-plan.md §4.5 R102.M2-002
+// (paideia-os monorepo); this repo's #5; design/wire-protocol.md §3.
+
+module Decoration = structure {
+
+  pub let SWM_DECO_ERR_LOOKUP : u64 = 0xFFFFFFFFFFFFFFFA   // -6
+  pub let SWM_DECO_ERR_SEND   : u64 = 0xFFFFFFFFFFFFFFF9   // -7
+
+  pub let SWM_DECO_COLOR_FOCUS_RGB : u64 = 0x00A0FF
+  pub let SWM_DECO_WIDTH_PX_ON     : u64 = 2
+  pub let SWM_DECO_WIDTH_PX_OFF    : u64 = 0
+
+  // svc-compositor's frozen WM_SET_FOCUS ordinal (caps.decl v1.1.0,
+  // request.WM_SET_FOCUS = 0x11). svc-wm's decoration directive rides
+  // this ordinal: (surface_id, border_rgb, border_width_px).
+  pub let SWM_OUT_WM_SET_FOCUS : u64 = 0x11
+
+  pub let swm_wm_ep_name     : [u8; 16] = "svc.compositor\0\0"
+  pub let swm_wm_ep_name_len : u64      = 14
+
+  // 0 = no surface currently decorated (fresh-boot default).
+  pub let mut swm_decoration_focused_id : u64 = 0
+
+  pub let mut swm_deco_frame_buf : [u8; 64] = uninit @align(8)
+
+  // decoration_send(cap_slot, surface_id, border_rgb, border_width_px)
+  //   -> 0 | SWM_DECO_ERR_SEND
+  pub let decoration_send : (u64, u64, u64, u64) -> u64 !{mem, sysreg} @{} =
+    fn (cap_slot: u64) (surface_id: u64) (border_rgb: u64) (border_width_px: u64) -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M2-002 (#5) DecorationSend. Stash the four incoming args (cap_slot->r8, surface_id->r9; border_rgb/border_width_px stay in rdx/rcx) BEFORE building the frame, since rdi/rsi get reassigned to the syscall's own hdr_va/payload_va shortly after. Zero-fill the 64-byte frame, pack the header (op=0x11 WM_SET_FOCUS, ver=1, reply_endpoint_id=0, payload_len=56) via shl/or into rax then one qword store, write surface_id/border_rgb/border_width_px each as a single qword mov (no dword/qword-ptr immediates, no byte-register aliases). sys_ipc_send(cap_slot, hdr_va, payload_va, 56); negative return -> SWM_DECO_ERR_SEND. Leaf (only a raw `syscall`, no nested `call`) -- r8/r9/r10/rax/rcx/rdx/rdi/rsi are all caller-save under SysV and SYSCALL clobbers rcx/r11 only, so no push/pop is needed here despite the register churn. Labels prefixed sdc_.",
+      block: {
+        mov r8, rdi;                     // cap_slot
+        mov r9, rsi;                     // surface_id
+
+        xor rax, rax;
+        mov [rip + swm_deco_frame_buf + 0], rax;
+        mov [rip + swm_deco_frame_buf + 8], rax;
+        mov [rip + swm_deco_frame_buf + 16], rax;
+        mov [rip + swm_deco_frame_buf + 24], rax;
+        mov [rip + swm_deco_frame_buf + 32], rax;
+        mov [rip + swm_deco_frame_buf + 40], rax;
+        mov [rip + swm_deco_frame_buf + 48], rax;
+        mov [rip + swm_deco_frame_buf + 56], rax;
+
+        mov rax, 0x11;                   // op = WM_SET_FOCUS
+        mov r10, 1;                      // ver = 1
+        shl r10, 8;
+        or rax, r10;
+        mov r10, 56;                     // payload_len = 56
+        shl r10, 32;
+        or rax, r10;
+        mov [rip + swm_deco_frame_buf + 0], rax;
+
+        mov [rip + swm_deco_frame_buf + 8], r9;    // surface_id
+        mov [rip + swm_deco_frame_buf + 16], rdx;  // border_rgb
+        mov [rip + swm_deco_frame_buf + 24], rcx;  // border_width_px
+
+        mov rdi, r8;                     // cap_slot
+        lea rsi, [rip + swm_deco_frame_buf];
+        lea rdx, [rip + swm_deco_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;                     // SC+ ID 42 = sys_ipc_send
+        syscall;
+        cmp rax, 0;
+        jl sdc_send_fail;
+        xor rax, rax;
+        ret;
+
+      sdc_send_fail:
+        mov rax, 0xFFFFFFFFFFFFFFF9;
+        ret;
+      }
+    }
+
+  // decoration_on_focus_change(new_focus_id) -> 0 | SWM_DECO_ERR_LOOKUP | SWM_DECO_ERR_SEND
+  pub let decoration_on_focus_change : (u64) -> u64 !{mem, sysreg} @{} =
+    fn (new_focus_id: u64) -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M2-002 (#5) DecorationOnFocusChange. No-op guard: new_focus_id == the currently-decorated id skips all IPC (a refocus onto the same surface is not a change). Otherwise: push rbx/r12/r13 (entry rsp%16==8 -> 3 pushes -> %16==0 for the nested `call`s below) -- rbx=new_focus_id, r12=old_focus_id (read before the lookup overwrites memory-derived state), r13=cap_slot from sys_svc_lookup. If old_focus_id != 0, call decoration_send(cap_slot, old_id, 0, 0) to un-decorate (SWM_DECO_WIDTH_PX_OFF); always call decoration_send(cap_slot, new_id, 0x00A0FF, 2) to decorate the new focus (SWM_DECO_COLOR_FOCUS_RGB / SWM_DECO_WIDTH_PX_ON). Both `call` sites sit at the identical stack depth (only a raw `syscall` -- the lookup -- runs between the pushes and the first call, which does not change rsp), so the %16==0 alignment established by the 3 pushes holds for both. On full success, commits swm_decoration_focused_id = new_focus_id. Every exit path pops r13/r12/rbx (reverse order) before returning. Labels prefixed dfc_.",
+      block: {
+        mov rax, [rip + swm_decoration_focused_id];
+        cmp rdi, rax;
+        je dfc_noop_pre;
+
+        push rbx;
+        push r12;
+        push r13;
+
+        mov rbx, rdi;                    // new_focus_id
+        mov r12, [rip + swm_decoration_focused_id];   // old_focus_id
+
+        lea rdi, [rip + swm_wm_ep_name];
+        mov rsi, 14;
+        mov rax, 43;                     // SC+ ID 43 = sys_svc_lookup
+        syscall;
+        cmp rax, 0;
+        jl dfc_lookup_fail;
+        mov r13, rax;                    // cap_slot
+
+        cmp r12, 0;
+        je dfc_skip_undecorate;
+
+        mov rdi, r13;
+        mov rsi, r12;
+        mov rdx, 0;                      // border_rgb (cleared)
+        mov rcx, 0;                      // border_width_px = SWM_DECO_WIDTH_PX_OFF
+        call decoration_send;
+        cmp rax, 0;
+        jl dfc_send_fail;
+
+      dfc_skip_undecorate:
+        mov rdi, r13;
+        mov rsi, rbx;
+        mov rdx, 0x00A0FF;               // SWM_DECO_COLOR_FOCUS_RGB
+        mov rcx, 2;                      // SWM_DECO_WIDTH_PX_ON
+        call decoration_send;
+        cmp rax, 0;
+        jl dfc_send_fail;
+
+        mov [rip + swm_decoration_focused_id], rbx;
+        pop r13;
+        pop r12;
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      dfc_lookup_fail:
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFFA;
+        ret;
+
+      dfc_send_fail:
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFF9;
+        ret;
+
+      dfc_noop_pre:
+        xor rax, rax;
+        ret;
+      }
+    }
+
+}

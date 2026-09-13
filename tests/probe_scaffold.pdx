@@ -1,0 +1,44 @@
+// tests/probe_scaffold.pdx -- svc-wm v0.5.0 (Wave FF: R102.M1-001, #1)
+// ProbeScaffold: honest-witness for the repo-scaffold closer. Publishes
+// the fingerprint issue #1 names to fd 1.
+//
+// Scaffold completeness (README.md, LICENSE, CHANGELOG.md, caps.decl,
+// tools/build.sh, manifest.pdxsig) has no runtime behaviour to assert
+// against -- this witness exists purely so the monorepo's smoke harness
+// has a `[smoke]`-style grep line confirming this repo's own toolchain
+// (paideia-as assemble + a live sys_write) is wired at all, matching
+// svc-compositor's own tests/boot_r102_first_pixel.pdx precedent for a
+// milestone with no active body to exercise.
+//
+// paideia-as encoder notes: identical shape to svc-compositor's
+// boot_r102_first_pixel.pdx; labels prefixed `probe_scaffold_`.
+
+module ProbeScaffold = structure {
+
+  pub let probe_scaffold_fp     : [u8; 20] = "svc-wm scaffold ok\n\0"
+  pub let probe_scaffold_fp_len : u64      = 19
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M1-001 (#1): ProbeScaffold::run honest-witness. rdi=1, rsi=lea [rip+probe_scaffold_fp], rdx=18, rax=1 (sys_write), syscall. `cmp rax, 0; jl probe_scaffold_fail`. Success: xor rax, rax; ret. Failure: mov rax, 1; ret. No `test`, no `and rN, imm64`, no byte-register mov. Labels prefixed probe_scaffold_.",
+      block: {
+        mov rdi, 1;
+        lea rsi, [rip + probe_scaffold_fp];
+        mov rdx, 19;
+        mov rax, 1;
+        syscall;
+
+        cmp rax, 0;
+        jl probe_scaffold_fail;
+
+        xor rax, rax;
+        ret;
+
+      probe_scaffold_fail:
+        mov rax, 1;
+        ret;
+      }
+    }
+
+}

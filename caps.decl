@@ -1,0 +1,99 @@
+# caps.decl -- svc-wm v0.5.0 (Wave FF: R102.M1-001/M1-002/M1-003/M2-001/M2-002)
+#
+# Capability declaration for the window-manager service. Consulted by the
+# kernel-side svc_broker + loader hand-off to decide (a) which cap kinds
+# this ELF is allowed to hold, (b) which named IPC endpoint it registers,
+# and (c) the frozen wire protocol version any client library must speak
+# to talk to it. Line-oriented, `key = value`, `#` comments ignored --
+# same shape every R100/R102 satellite in this org ships (svc-compositor's
+# own caps.decl is the direct sibling precedent this file mirrors).
+#
+# Upstream: design/graphics/r102-user-plan.md §4.5 (svc-wm milestones) in
+# the paideia-os monorepo. Wire ordinals below are hand-synchronized with
+# design/wire-protocol.md (this repo, #2) and with svc-compositor's own
+# caps.decl (request.WM_PLACE_WINDOW / request.WM_SET_FOCUS -- the two
+# ordinals svc-wm rides outbound on `svc.compositor.wm`, referenced but
+# NOT re-declared here since this file only freezes svc-wm's OWN inbound
+# protocol on `svc.wm`).
+
+service.name         = svc.wm
+service.wave         = R102
+protocol.version     = R102-WM-v0
+
+# ------------------------------------------------------------------
+# Capability kinds this service HOLDS
+# ------------------------------------------------------------------
+# KIND_USER: attribution only (which paideia-os user identity launched
+#   this service), per the KIND_USER=0x190 org-wide convention every
+#   M5-closer satellite carries (design/capabilities/linearity-and-tags.md
+#   §3.1b). Unconsumed at v0.5.0.
+cap.holds            = KIND_USER
+# KIND_IPC_ENDPOINT (=5): the `svc.wm` endpoint this service registers on
+#   svc_broker (see endpoint.register below) plus the client-side cap this
+#   service itself holds toward `svc.compositor` (minted via sys_svc_lookup,
+#   sysno 43, at connect time -- src/main.pdx).
+cap.holds            = KIND_IPC_ENDPOINT
+# KIND_SURFACE (=0x1B8, frozen design/graphics/r113-m1-substrate.md):
+#   svc-wm does NOT mint or own KIND_SURFACE -- svc.compositor is the sole
+#   authority per that freeze doc. svc-wm only ever REFERENCES surface_id
+#   values that arrive over the wire (SURFACE_ATTACH/SURFACE_DETACH,
+#   design/wire-protocol.md #2) and echoes them back out in SURFACE_MOVE /
+#   decoration requests to the compositor. Declared here (stub posture,
+#   like svc-compositor's own KIND_FB_SCANOUT stub at its M1-002) so a
+#   future cap-gate tightening that requires an explicit reference
+#   declaration for any KIND_SURFACE id a service quotes on the wire does
+#   not need a caps.decl edit.
+cap.holds            = KIND_SURFACE
+# KIND_INPUT_EVENT: forward-compat placeholder for the real focus/input-
+#   routing capability this service will mint once M3-001 lands. The
+#   design doc (r102-user-plan.md §7.2.2) names this capability
+#   KIND_INPUT_FOCUS; KIND_INPUT_EVENT is declared here as the wave-FF
+#   working name pending that naming freeze -- see this repo's STATUS.md
+#   "naming risk" note. No mint occurs at v0.5.0 (M1..M2 scope only).
+cap.holds            = KIND_INPUT_EVENT
+
+# ------------------------------------------------------------------
+# IPC endpoints this service REGISTERS on svc_broker
+# ------------------------------------------------------------------
+# svc-wm's own inbound endpoint -- clients (apps, the compositor's reverse
+# queries) reach the 12 message shapes design/wire-protocol.md freezes.
+endpoint.register    = svc.wm
+
+# ------------------------------------------------------------------
+# Frozen wire request codes (R102-WM-v0) -- svc-wm's OWN inbound protocol
+# ------------------------------------------------------------------
+# Numeric ordinals FROZEN at v0.5.0. Any renumbering ships as
+# R102-WM-v1 on a new protocol.version line + a corresponding minor bump.
+# Full record layouts: design/wire-protocol.md (this repo, #2).
+request.REGISTER_CLIENT        = 0x01
+request.SURFACE_ATTACH         = 0x02
+request.SURFACE_DETACH         = 0x03
+request.FOCUS_QUERY            = 0x04
+request.FOCUS_SET              = 0x05
+request.TILE_QUERY             = 0x06
+request.TILE_SET               = 0x07
+request.ALT_TAB                = 0x08
+request.ALT_F4                 = 0x09
+request.ALT_SPACE_PALETTE      = 0x0A
+request.PING                   = 0x0B
+request.GET_STATE              = 0x0C
+
+# ------------------------------------------------------------------
+# Sentinel reply codes -- reply op = request op | 0x80 per the frame
+# convention design/ipc/userspace-server-substrate.md §4 pins org-wide.
+# REGISTER_OK is spelled out explicitly since src/main.pdx's connect
+# path checks it by name; every other reply is the generic op|0x80 form.
+# ------------------------------------------------------------------
+reply.REGISTER_OK               = 0x81
+reply.ERROR                     = 0xFF
+
+# ------------------------------------------------------------------
+# Outbound requests this service ISSUES on svc.compositor's own frozen
+# protocol (svc-compositor caps.decl v1.1.0) -- listed here for audit
+# trail only, not re-declared as this repo's own request.* ordinals.
+# ------------------------------------------------------------------
+#   svc.compositor.wm  WM_PLACE_WINDOW = 0x10  -- ridden by SURFACE_MOVE
+#                                                 (src/tiling.pdx)
+#   svc.compositor.wm  WM_SET_FOCUS    = 0x11  -- ridden by the focus-
+#                                                 outline decoration
+#                                                 directive (src/decoration.pdx)

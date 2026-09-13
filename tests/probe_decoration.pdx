@@ -1,0 +1,57 @@
+// tests/probe_decoration.pdx -- svc-wm v0.5.0 (Wave FF: R102.M2-002, #5)
+// ProbeDecoration: REAL assertion witness over Decoration's no-IPC guard
+// path.
+//
+// Decoration::decoration_on_focus_change always issues real IPC
+// (sys_svc_lookup + sys_ipc_send) on any ACTUAL focus change, so it
+// cannot be exercised end to end without a live svc.compositor.wm
+// endpoint -- same cross-process boundary tests/probe_register.pdx
+// documents for #3. It DOES have one branch reachable with zero syscalls:
+// the no-op guard, taken when the requested new_focus_id equals the
+// already-decorated id. At fresh boot, swm_decoration_focused_id is 0
+// (explicit initializer in src/decoration.pdx), so calling
+// decoration_on_focus_change(0) MUST take that guard and return 0
+// without touching the network -- a genuine, real, deterministic
+// assertion, not a fabricated green light. (A real lookup failure, absent
+// a live svc.compositor, would surface as a negative SWM_DECO_ERR_LOOKUP
+// return, not 0 -- so a 0 return here IS proof the guard fired, not
+// coincidental success of a real round trip that happens not to exist.)
+//
+// The full decorate/undecorate IPC path is deferred to the monorepo's
+// multi-process boot smoke, matching this repo's #3/#4 precedent.
+
+module ProbeDecoration = structure {
+
+  pub let probe_decoration_fp     : [u8; 28] = "svc-wm decoration guard ok\n\0"
+  pub let probe_decoration_fp_len : u64      = 27
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M2-002 (#5): ProbeDecoration::run real-assertion witness. push rbx (pure alignment padding -- entry rsp%16==8 -> %16==0 for the nested `call decoration_on_focus_change`). rdi=0 (the fresh-boot swm_decoration_focused_id value); the call must take the no-IPC no-op guard and return 0. `cmp rax, 0; jne probe_decoration_fail` gates the fingerprint write on that. Labels prefixed pdc_.",
+      block: {
+        push rbx;
+
+        mov rdi, 0;
+        call decoration_on_focus_change;
+        cmp rax, 0;
+        jne pdc_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + probe_decoration_fp];
+        mov rdx, 27;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      pdc_fail:
+        pop rbx;
+        mov rax, 1;
+        ret;
+      }
+    }
+
+}

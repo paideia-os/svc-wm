@@ -1,0 +1,148 @@
+// tests/probe_tiling.pdx -- svc-wm v0.5.0 (Wave FF: R102.M2-001, #4)
+// ProbeTiling: REAL assertion witness (not a fingerprint-only stub) over
+// Tiling::tiling_attach / tiling_detach / tiling_recompute / tiling_divide.
+// None of these need a live svc.compositor -- they are pure in-process
+// list maintenance + geometry arithmetic -- so every assertion below
+// runs BEFORE the fingerprint write, exactly the "assertion added before
+// the sys_write" shape this org's honest-witness convention documents as
+// the eventual target for every deferred witness (svc-compositor's
+// tests/README.md). `tiling_emit_moves` (the IPC-emitting half of M2-001)
+// is deliberately NOT exercised here since it needs a live
+// svc.compositor.wm endpoint -- out of scope for a single-process repo
+// smoke, same boundary tests/probe_register.pdx documents for #3.
+//
+// Sequence: attach four surfaces (100, 200, 300, 400) into the 1920-wide
+// stub viewport -> expect 4 equal 480px columns at x=0,480,960,1440,
+// y=0, h=1080; detach surface 200 (index 1) -> expect the swap-remove to
+// pull surface 400 (the last live entry) into slot 1 and count to drop
+// to 3. Any mismatch aborts before the fingerprint write and returns a
+// distinct per-assertion code.
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held); every `call` in this file sits at the same
+// stack depth (one padding push at entry, no other push/pop until the
+// final cleanup), so rsp%16==0 holds at each CALL site throughout.
+// Labels prefixed `ptl_`.
+
+module ProbeTiling = structure {
+
+  pub let probe_tiling_fp     : [u8; 25] = "svc-wm tiling policy ok\n\0"
+  pub let probe_tiling_fp_len : u64      = 24
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M2-001 (#4): ProbeTiling::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0), then a flat sequence of `call tiling_attach`/`call tiling_detach`/`call tiling_recompute` calls, each followed by a `cmp rax, 0; je <skip>; mov rbx, <code>` idiom that records the FIRST failing assertion's code into rbx without disturbing later checks (rbx only ever transitions away from 0, never back). Geometry reads are direct `[rip + swm_tile_geom + <byte offset>]` loads against Tiling's own published layout (row i's x/y/w/h live at 8*(i*4+0..3)). Final `cmp rbx, 0; jne ptl_fail` gates the fingerprint write on every assertion having held. Labels prefixed ptl_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 100;
+        call tiling_attach;
+        cmp rax, 0;
+        je ptl_a1_ok;
+        mov rbx, 1;
+      ptl_a1_ok:
+
+        mov rdi, 200;
+        call tiling_attach;
+        cmp rax, 0;
+        je ptl_a2_ok;
+        mov rbx, 2;
+      ptl_a2_ok:
+
+        mov rdi, 300;
+        call tiling_attach;
+        cmp rax, 0;
+        je ptl_a3_ok;
+        mov rbx, 3;
+      ptl_a3_ok:
+
+        mov rdi, 400;
+        call tiling_attach;
+        cmp rax, 0;
+        je ptl_a4_ok;
+        mov rbx, 4;
+      ptl_a4_ok:
+
+        call tiling_recompute;
+        cmp rax, 0;
+        je ptl_rc_ok;
+        mov rbx, 5;
+      ptl_rc_ok:
+
+        // column width (row 0's w field, byte offset 16 within row 0).
+        mov rax, [rip + swm_tile_geom + 16];
+        cmp rax, 480;
+        je ptl_w_ok;
+        mov rbx, 6;
+      ptl_w_ok:
+
+        // x offsets: row0=0, row1=480, row2=960, row3=1440.
+        // row i base byte offset = i*4*8 = i*32.
+        mov rax, [rip + swm_tile_geom + 0];
+        cmp rax, 0;
+        je ptl_x0_ok;
+        mov rbx, 7;
+      ptl_x0_ok:
+
+        mov rax, [rip + swm_tile_geom + 32];
+        cmp rax, 480;
+        je ptl_x1_ok;
+        mov rbx, 8;
+      ptl_x1_ok:
+
+        mov rax, [rip + swm_tile_geom + 64];
+        cmp rax, 960;
+        je ptl_x2_ok;
+        mov rbx, 9;
+      ptl_x2_ok:
+
+        mov rax, [rip + swm_tile_geom + 96];
+        cmp rax, 1440;
+        je ptl_x3_ok;
+        mov rbx, 10;
+      ptl_x3_ok:
+
+        // detach surface 200 (index 1); swap-remove pulls surface 400
+        // (the last live id, index 3) into slot 1.
+        mov rdi, 200;
+        call tiling_detach;
+        cmp rax, 0;
+        je ptl_d_ok;
+        mov rbx, 11;
+      ptl_d_ok:
+
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 3;
+        je ptl_cnt_ok;
+        mov rbx, 12;
+      ptl_cnt_ok:
+
+        mov rax, [rip + swm_tile_ids + 8];
+        cmp rax, 400;
+        je ptl_swap_ok;
+        mov rbx, 13;
+      ptl_swap_ok:
+
+        cmp rbx, 0;
+        jne ptl_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + probe_tiling_fp];
+        mov rdx, 24;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      ptl_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

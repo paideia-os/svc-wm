@@ -1,0 +1,370 @@
+// src/tiling.pdx -- svc-wm v0.5.0 (Wave FF: R102.M2-001, #4)
+// Tiling module: fixed-column vertical tiling policy.
+//
+// Purpose
+// -------
+// Maintains a dense, packed list of up to `SWM_TILE_MAX` (8) attached
+// surface_ids. On attach/detach, recomputes geometry by splitting the
+// viewport width evenly into N columns (N = live attach count); each
+// surface fills the full viewport height and 1/N of the width. The
+// active geometry pass is pure (no IPC); a separate emission pass sends
+// one `SURFACE_MOVE` directive per attached surface to `svc.compositor`
+// over its frozen `WM_PLACE_WINDOW` ordinal (0x10, svc-compositor
+// caps.decl v1.1.0) on the `svc.compositor.wm` control endpoint.
+//
+// Data layout
+// -----------
+//   swm_tile_ids[0..swm_tile_count)   -- live surface_ids, densely packed
+//   swm_tile_ids[swm_tile_count..8)   -- stale/zeroed (swap-remove tail)
+//   swm_tile_geom[i*4 .. i*4+4)       -- (x, y, w, h) u64 quadruple for
+//                                        swm_tile_ids[i], written by
+//                                        tiling_recompute
+//
+// No division instruction
+// ------------------------
+// paideia-as exposes no `div`/`idiv` mnemonic (see libpdx-gfx's
+// damage.pdx module header: "paideia-as does not expose div; use and
+// imm8 idiom" -- that idiom only works because that ring's capacity is
+// a power of two; ours is not, since column_count ranges 1..8 over an
+// arbitrary viewport width). `tiling_divide` computes the column width
+// by bounded repeated subtraction instead. This runs only on
+// attach/detach (never per-frame), so the O(dividend) worst case
+// (viewport_width iterations at divisor=1) is cheap in practice.
+//
+// No multiplication either
+// -------------------------
+// `tiling_recompute`'s per-column x-offset would naively be
+// `index * column_width`, but 2-op `imul r,imm` is banned and
+// `column_width` is not a compile-time immediate (a 3-op `imul r,r,imm`
+// would not apply). The loop instead accumulates a running x offset via
+// `add`, which is exact and avoids multiplication entirely.
+//
+// paideia-as compliance
+// ---------------------
+//   - Module Tiling (PascalCase of tiling.pdx stem).
+//   - No `test rN,rN`; no `and rN,imm64` on r8-r15; no 2-op `imul`;
+//     no `neg`; no sil/dil/bl byte-register aliases; no Intel
+//     `dword ptr`/`qword ptr` immediate-to-memory writes (every such
+//     write goes through a register first).
+//   - Every function takes <=2 curried arguments.
+//   - Reserved-label discipline: labels prefixed `tat_` (attach),
+//     `tdt_` (detach), `tdiv_` (divide), `trc_` (recompute), `tem_`
+//     (emit_moves).
+//   - Stack discipline: `tiling_recompute` and `tiling_emit_moves` each
+//     push an odd count of callee-saved registers before their first
+//     nested `call`, landing rsp%16==0 at that CALL site (SysV entry
+//     convention hands every function rsp%16==8); every exit path pops
+//     in exact reverse push order before `ret`.
+//
+// Upstream: design/graphics/r102-user-plan.md §4.5 R102.M2-001
+// (paideia-os monorepo); this repo's #4; design/wire-protocol.md §3.
+
+module Tiling = structure {
+
+  pub let SWM_TILE_MAX          : u64 = 8
+  pub let SWM_TILE_ERR_FULL     : u64 = 0xFFFFFFFFFFFFFFFF   // -1
+  pub let SWM_TILE_ERR_DUP      : u64 = 0xFFFFFFFFFFFFFFFE   // -2
+  pub let SWM_TILE_ERR_NOTFOUND : u64 = 0xFFFFFFFFFFFFFFFD   // -3
+  pub let SWM_TILE_ERR_LOOKUP   : u64 = 0xFFFFFFFFFFFFFFFC   // -4
+  pub let SWM_TILE_ERR_SEND     : u64 = 0xFFFFFFFFFFFFFFFB   // -5
+
+  // Stub viewport (M2-001 scope; a real QUERY_GET_GEOMETRY round trip
+  // against svc.compositor is future M3 work per this repo's README
+  // milestone table).
+  pub let SWM_VIEWPORT_W : u64 = 1920
+  pub let SWM_VIEWPORT_H : u64 = 1080
+
+  // svc-compositor's frozen WM_PLACE_WINDOW ordinal (caps.decl v1.1.0,
+  // request.WM_PLACE_WINDOW = 0x10). svc-wm's SURFACE_MOVE directive
+  // rides this ordinal on the `svc.compositor.wm` control endpoint.
+  pub let SWM_OUT_SURFACE_MOVE : u64 = 0x10
+
+  pub let swm_wm_ep_name     : [u8; 16] = "svc.compositor\0\0"
+  pub let swm_wm_ep_name_len : u64      = 14
+
+  pub let mut swm_tile_ids   : [u64; 8]  = uninit @align(8)
+  pub let mut swm_tile_count : u64       = 0
+  pub let mut swm_tile_geom  : [u64; 32] = uninit @align(8)   // 8 rows x (x,y,w,h)
+
+  // 64-byte SURFACE_MOVE frame scratch, reused per emitted surface.
+  pub let mut swm_move_frame_buf : [u8; 64] = uninit @align(8)
+
+  // tiling_attach(surface_id) -> 0 | SWM_TILE_ERR_DUP | SWM_TILE_ERR_FULL
+  pub let tiling_attach : (u64) -> u64 !{mem} @{} =
+    fn (surface_id: u64) -> unsafe {
+      effects: {mem}, capabilities: {},
+      justification: "R102.M2-001 (#4) TilingAttach. Dense packed-array discipline: swm_tile_ids[0..swm_tile_count) holds live ids; slots >= count are stale/zeroed by tiling_detach's swap-remove. Scan [0,count) for a duplicate (idempotent re-attach is a no-op DUP, not a FULL error); if not found and count < SWM_TILE_MAX (8), append at [count] and increment count; else FULL. Register plan: rdi=surface_id (arg), rax=loop index, r10=&swm_tile_ids (rip-relative), r11=count, rcx=scratch slot value. Leaf, no push/pop (rax/rcx/r10/r11 all caller-save, no nested call). Labels prefixed tat_.",
+      block: {
+        lea r10, [rip + swm_tile_ids];
+        mov r11, [rip + swm_tile_count];
+        xor rax, rax;
+
+      tat_scan:
+        cmp rax, r11;
+        jae tat_scan_done;
+        mov rcx, [r10 + rax*8];
+        cmp rcx, rdi;
+        je tat_dup;
+        add rax, 1;
+        jmp tat_scan;
+
+      tat_scan_done:
+        cmp r11, 8;
+        jae tat_full;
+
+        mov [r10 + r11*8], rdi;
+        add r11, 1;
+        mov [rip + swm_tile_count], r11;
+        xor rax, rax;
+        ret;
+
+      tat_dup:
+        mov rax, 0xFFFFFFFFFFFFFFFE;
+        ret;
+
+      tat_full:
+        mov rax, 0xFFFFFFFFFFFFFFFF;
+        ret;
+      }
+    }
+
+  // tiling_detach(surface_id) -> 0 | SWM_TILE_ERR_NOTFOUND
+  pub let tiling_detach : (u64) -> u64 !{mem} @{} =
+    fn (surface_id: u64) -> unsafe {
+      effects: {mem}, capabilities: {},
+      justification: "R102.M2-001 (#4) TilingDetach. Swap-remove: scan [0,count) for surface_id; on a hit at index i, overwrite slot i with the current last live slot (count-1)'s value, zero the vacated last slot, decrement count. Self-swap (i == count-1) is a correct no-op (copies a slot onto itself, then zeroes it). Register plan: rdi=surface_id, r10=&swm_tile_ids, r11=count, rax=loop index, rcx=scratch, r9=swap scratch. Leaf, no push/pop. Labels prefixed tdt_.",
+      block: {
+        lea r10, [rip + swm_tile_ids];
+        mov r11, [rip + swm_tile_count];
+        xor rax, rax;
+
+      tdt_scan:
+        cmp rax, r11;
+        jae tdt_notfound;
+        mov rcx, [r10 + rax*8];
+        cmp rcx, rdi;
+        je tdt_found;
+        add rax, 1;
+        jmp tdt_scan;
+
+      tdt_found:
+        mov rcx, r11;
+        sub rcx, 1;                      // last_index = count - 1
+        mov r9, [r10 + rcx*8];
+        mov [r10 + rax*8], r9;
+        xor r9, r9;
+        mov [r10 + rcx*8], r9;
+        mov [rip + swm_tile_count], rcx;
+        xor rax, rax;
+        ret;
+
+      tdt_notfound:
+        mov rax, 0xFFFFFFFFFFFFFFFD;
+        ret;
+      }
+    }
+
+  // tiling_divide(dividend, divisor) -> quotient (bounded repeated
+  // subtraction -- see module header "No division instruction").
+  pub let tiling_divide : (u64, u64) -> u64 !{} @{} =
+    fn (dividend: u64) (divisor: u64) -> unsafe {
+      effects: {}, capabilities: {},
+      justification: "R102.M2-001 (#4) TilingDivide. paideia-as exposes no div/idiv mnemonic. divisor==0 refuses via a guard that returns dividend unchanged (a caller-visible degenerate signal, not a fault) rather than looping forever. Every real call site bounds divisor to <= SWM_TILE_MAX (8) and dividend to a viewport width in the low thousands, so the repeated-subtraction loop is cheap and runs only on attach/detach. Register plan: rax=quotient, rcx=remainder, rdi/rsi=args. Pure (no memory access) -- effects {}. Leaf, no push/pop. Labels prefixed tdiv_.",
+      block: {
+        cmp rsi, 0;
+        je tdiv_zero_divisor;
+
+        xor rax, rax;
+        mov rcx, rdi;
+
+      tdiv_loop:
+        cmp rcx, rsi;
+        jl tdiv_done;
+        sub rcx, rsi;
+        add rax, 1;
+        jmp tdiv_loop;
+
+      tdiv_done:
+        ret;
+
+      tdiv_zero_divisor:
+        mov rax, rdi;
+        ret;
+      }
+    }
+
+  // tiling_recompute() -> 0 -- pure geometry pass (no IPC). Writes
+  // swm_tile_geom[0 .. swm_tile_count*4) from swm_tile_ids.
+  pub let tiling_recompute : () -> u64 !{mem} @{} =
+    fn () -> unsafe {
+      effects: {mem}, capabilities: {},
+      justification: "R102.M2-001 (#4) TilingRecompute. count==0 short-circuits before any push (nothing to compute). Otherwise: push rbx/r12/r13 (entry rsp%16==8 -> 3 pushes -> %16==0, satisfying the CALL-site alignment obligation for the single nested `call tiling_divide` immediately following) -- r12 holds count across that call (r12 is callee-saved so it need not be re-read from memory post-call), rbx holds the resulting column width across the geometry loop (also callee-saved; SYSCALL is not even in play here, only the one ordinary `call`, whose callee -- tiling_divide -- is verified not to touch rbx/r12/r13 in its own body). Loop over i in [0,count): row_offset = i*4 via `shl` (compile-time-constant shift, not the banned imul); write x=running_x, y=0, w=column_width, h=SWM_VIEWPORT_H (1080); running_x += column_width via `add` (no multiplication needed since offsets accumulate). Pop r13/r12/rbx (reverse push order) before every return path. Labels prefixed trc_.",
+      block: {
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 0;
+        je trc_ok_empty;
+
+        push rbx;
+        push r12;
+        push r13;
+
+        mov r12, rax;                    // count
+        mov rdi, 1920;                   // SWM_VIEWPORT_W
+        mov rsi, r12;
+        call tiling_divide;
+        mov rbx, rax;                    // column width
+
+        lea r10, [rip + swm_tile_geom];
+        xor rax, rax;                    // i = 0
+        xor r9, r9;                      // running_x = 0
+
+      trc_loop:
+        cmp rax, r12;
+        jae trc_done;
+
+        mov rcx, rax;
+        shl rcx, 2;                      // rcx = i*4 (row base, in u64 slots)
+        mov [r10 + rcx*8], r9;           // x
+        mov r11, 0;
+        mov [r10 + rcx*8 + 8], r11;      // y
+        mov [r10 + rcx*8 + 16], rbx;     // w
+        mov r11, 1080;                   // SWM_VIEWPORT_H
+        mov [r10 + rcx*8 + 24], r11;     // h
+
+        add r9, rbx;
+        add rax, 1;
+        jmp trc_loop;
+
+      trc_done:
+        pop r13;
+        pop r12;
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      trc_ok_empty:
+        xor rax, rax;
+        ret;
+      }
+    }
+
+  // tiling_emit_moves() -> count moved | SWM_TILE_ERR_LOOKUP | SWM_TILE_ERR_SEND
+  // Refreshes geometry via tiling_recompute, then sends one SURFACE_MOVE
+  // per attached surface to svc.compositor.wm.
+  pub let tiling_emit_moves : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M2-001 (#4) TilingEmitMoves. push rbx (entry rsp%16==8 -> 1 push -> %16==0) then `call tiling_recompute` (no args needed, result discarded -- geometry is read back from swm_tile_geom afterward). Push r12/r13/r14 (3 more pushes, rsp parity no longer load-bearing since only raw `syscall`s follow, never another `call`): r12=count, r13=loop index, r14=&swm_tile_geom (SYSCALL clobbers rcx/r11 only per this org's net_api.pdx precedent, so rbx/r12/r13/r14 all survive every syscall in the loop untouched). count==0 and lookup-failure paths pop all four before returning; the per-iteration frame is zero-filled then packed exactly like Main::run's REGISTER_CLIENT frame (header via shl/or into rax, one qword store; fields via qword movs -- no dword/qword-ptr immediates). Send failure mid-loop aborts and pops all four, returning SWM_TILE_ERR_SEND; success returns the count moved (r13's final value, read into rax BEFORE the pops). Labels prefixed tem_.",
+      block: {
+        push rbx;
+        call tiling_recompute;
+
+        push r12;
+        push r13;
+        push r14;
+
+        mov r12, [rip + swm_tile_count];
+        cmp r12, 0;
+        je tem_none;
+
+        lea r14, [rip + swm_tile_geom];
+
+        lea rdi, [rip + swm_wm_ep_name];
+        mov rsi, 14;
+        mov rax, 43;                     // SC+ ID 43 = sys_svc_lookup
+        syscall;
+        cmp rax, 0;
+        jl tem_lookup_fail;
+        mov rbx, rax;                    // cap_slot
+
+        xor r13, r13;                    // i = 0
+
+      tem_loop:
+        cmp r13, r12;
+        jae tem_done;
+
+        // Zero-fill the 64-byte frame.
+        xor rax, rax;
+        mov [rip + swm_move_frame_buf + 0], rax;
+        mov [rip + swm_move_frame_buf + 8], rax;
+        mov [rip + swm_move_frame_buf + 16], rax;
+        mov [rip + swm_move_frame_buf + 24], rax;
+        mov [rip + swm_move_frame_buf + 32], rax;
+        mov [rip + swm_move_frame_buf + 40], rax;
+        mov [rip + swm_move_frame_buf + 48], rax;
+        mov [rip + swm_move_frame_buf + 56], rax;
+
+        // Header: op=0x10 (WM_PLACE_WINDOW), ver=1, reply_endpoint_id=0,
+        // payload_len=56.
+        mov rax, 0x10;
+        mov rcx, 1;
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_move_frame_buf + 0], rax;
+
+        // Payload: surface_id, x, y, w, h.
+        lea r10, [rip + swm_tile_ids];
+        mov rcx, [r10 + r13*8];
+        mov [rip + swm_move_frame_buf + 8], rcx;
+
+        mov rax, r13;
+        shl rax, 2;                      // row base (u64 slots)
+        mov rcx, [r14 + rax*8 + 0];
+        mov [rip + swm_move_frame_buf + 16], rcx;
+        mov rcx, [r14 + rax*8 + 8];
+        mov [rip + swm_move_frame_buf + 24], rcx;
+        mov rcx, [r14 + rax*8 + 16];
+        mov [rip + swm_move_frame_buf + 32], rcx;
+        mov rcx, [r14 + rax*8 + 24];
+        mov [rip + swm_move_frame_buf + 40], rcx;
+
+        mov rdi, rbx;
+        lea rsi, [rip + swm_move_frame_buf];
+        lea rdx, [rip + swm_move_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;                     // SC+ ID 42 = sys_ipc_send
+        syscall;
+        cmp rax, 0;
+        jl tem_send_fail;
+
+        add r13, 1;
+        jmp tem_loop;
+
+      tem_done:
+        mov rax, r13;
+        pop r14;
+        pop r13;
+        pop r12;
+        pop rbx;
+        ret;
+
+      tem_none:
+        pop r14;
+        pop r13;
+        pop r12;
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      tem_lookup_fail:
+        pop r14;
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFFC;
+        ret;
+
+      tem_send_fail:
+        pop r14;
+        pop r13;
+        pop r12;
+        pop rbx;
+        mov rax, 0xFFFFFFFFFFFFFFFB;
+        ret;
+      }
+    }
+
+}

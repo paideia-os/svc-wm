@@ -1,0 +1,116 @@
+# svc-wm v0.5.0 -- release manifest (source form)
+#
+# This is the human-readable source form of `manifest.pdxsig`. At a
+# signed release, the release tool at pkgs.paideia-os mirror-push time
+# (a) enumerates the artifact list below, (b) recomputes every
+# BLAKE3-256 hash from the repo tree at the release tag, (c) writes the
+# completed manifest into a binary `manifest.pdxsig`, and (d) invokes
+#   paideia-pq-sign::sign_release_artifact(sk, manifest_path)
+# once with the paideia-release-line Ed25519 secret key and once with
+# the ML-DSA-65 secret key. Format mirrors svc-compositor's own
+# `release/manifest.pdxsig.txt` (this org's Wave F/Y closer template).
+#
+# v0.5.0 is an M2-close scaffold checkpoint, NOT the dual-signed 1.0.0
+# release this repo's README documents as the M5 milestone target
+# ("Repo shape mirrors R100 satellites: ... dual-signed manifest.pdxsig
+# at 1.0.0"). This source-form manifest lands at repo root starting at
+# M1-001 (#1) per that milestone's scaffold ask, and is refreshed at
+# every subsequent release tag; the [signatures] block below stays
+# PLACEHOLDER until the real M5 dual-sign pass.
+#
+# Reference:
+#   design/paideia-as/v0.20-issue-1025-pq-signing.md -- Hybrid,
+#     sign_release_artifact, HybridSignature (Ed25519 || ML-DSA-65).
+#   design/graphics/r102-user-plan.md §4.5              -- svc-wm scope.
+
+format-version:      1
+manifest-schema:     paideia-manifest-pdxsig@1
+package-name:        svc-wm
+package-version:     0.5.0
+package-release:     R102-M2
+package-kind:        service
+package-license:     MIT
+source-repo:         https://github.com/paideia-os/svc-wm
+source-commit:       <TAG-v0.5.0-COMMIT-SHA>   # release tool fills in
+source-tag:          v0.5.0
+
+# ---------------------------------------------------------------
+# Artifact set -- every file the v0.5.0 tag ships. Hash discipline is
+# BLAKE3-256, upper 32 bytes rendered as 64 hex chars. Order is stable
+# (lexicographic within each section) so the concatenated hash-input is
+# reproducible across signers.
+# ---------------------------------------------------------------
+
+[artifacts.source]
+src/main.pdx                              blake3-256 = <BLAKE3-main.pdx>
+src/tiling.pdx                            blake3-256 = <BLAKE3-tiling.pdx>
+src/decoration.pdx                        blake3-256 = <BLAKE3-decoration.pdx>
+
+[artifacts.tests]
+tests/README.md                           blake3-256 = <BLAKE3-tests-README.md>
+tests/probe_scaffold.pdx                  blake3-256 = <BLAKE3-probe_scaffold.pdx>
+tests/probe_wire_protocol.pdx             blake3-256 = <BLAKE3-probe_wire_protocol.pdx>
+tests/probe_register.pdx                  blake3-256 = <BLAKE3-probe_register.pdx>
+tests/probe_tiling.pdx                    blake3-256 = <BLAKE3-probe_tiling.pdx>
+tests/probe_decoration.pdx                blake3-256 = <BLAKE3-probe_decoration.pdx>
+
+[artifacts.meta]
+caps.decl                                 blake3-256 = <BLAKE3-caps.decl>
+design/wire-protocol.md                   blake3-256 = <BLAKE3-wire-protocol.md>
+STATUS.md                                 blake3-256 = <BLAKE3-STATUS.md>
+
+[artifacts.legal]
+LICENSE                                   blake3-256 = <BLAKE3-LICENSE>
+README.md                                 blake3-256 = <BLAKE3-README.md>
+CHANGELOG.md                              blake3-256 = <BLAKE3-CHANGELOG.md>
+
+# ---------------------------------------------------------------
+# Cross-repo dependencies.
+# ---------------------------------------------------------------
+
+[depends-on]
+# (empty at v0.5.0 -- no satellite library linkage; svc-wm talks to
+# svc.compositor purely over the kernel IPC substrate, no shared code.)
+
+[not-linked]
+# Named as a wire-protocol peer in this repo's own docs but not a link
+# dependency.
+svc-compositor            # IPC peer only (svc.compositor.wm control endpoint)
+
+# ---------------------------------------------------------------
+# Substrate contracts.
+# ---------------------------------------------------------------
+
+[substrate]
+paideia-as-toolchain      >= 0.24.0-mldsa65-sign
+kernel-syscall            = sys_write (1), sys_getpid (39), sys_ipc_recv (40),
+                            sys_ipc_reply (41), sys_ipc_send (42),
+                            sys_svc_lookup (43)
+kernel-cap-kind           = KIND_USER (0x190)          # attribution only
+kernel-cap-kind           = KIND_IPC_ENDPOINT (5)
+kernel-cap-kind           = KIND_SURFACE (0x1B8)       # referenced, not minted
+kernel-cap-kind           = KIND_INPUT_EVENT           # placeholder, unminted at 0.5.0
+
+# ---------------------------------------------------------------
+# Signature block -- NOT PERFORMED AT THIS MILESTONE. See
+# svc-compositor's release/RELEASE-1.0.0.md §3 for the full rationale
+# every M5 closer in this org shares; the real dual-sign pass is a
+# release-time step performed with live key material outside this repo.
+# ---------------------------------------------------------------
+
+[signatures]
+signer-identity      = paideia-release-line
+signer-key-source    = design/02-development-environment.md
+signature-scheme     = hybrid-ed25519+ml-dsa-65 (paideia-pq-hybrid-v1)
+hash-input-algo      = blake3-256
+hash-input-domain    = "paideia-release-artifact\x00" || manifest-body-bytes
+
+ed25519-key-id       = SIGNATURE_PLACEHOLDER_PENDING_LIVE_SIGN
+ed25519-signature    = SIGNATURE_PLACEHOLDER_PENDING_LIVE_SIGN
+
+ml-dsa-65-key-id     = SIGNATURE_PLACEHOLDER_PENDING_LIVE_SIGN
+ml-dsa-65-signature  = SIGNATURE_PLACEHOLDER_PENDING_LIVE_SIGN
+
+# End of manifest.pdxsig source. Refreshed at every release tag; the
+# dual-sign pass that fills in [signatures] and every <BLAKE3-*>
+# placeholder is a release-time step outside this milestone.

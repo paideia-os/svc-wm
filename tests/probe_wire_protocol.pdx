@@ -1,0 +1,40 @@
+// tests/probe_wire_protocol.pdx -- svc-wm v0.5.0 (Wave FF: R102.M1-002, #2)
+// ProbeWireProtocol: honest-witness for the frozen wire-protocol closer.
+// Publishes the fingerprint issue #2 names to fd 1.
+//
+// The protocol freeze itself (design/wire-protocol.md's 12 message
+// shapes + caps.decl's request.*/reply.* ordinals) is pure documentation
+// and data -- there is no runtime code path to assert against. This
+// witness confirms the toolchain can assemble and boot a driver in this
+// repo at all, matching svc-compositor's tests/probe_wire_protocol.pdx
+// precedent for the same kind of data-only closer.
+
+module ProbeWireProtocol = structure {
+
+  pub let probe_wire_fp     : [u8; 32] = "svc-wm wire-protocol frozen ok\n\0"
+  pub let probe_wire_fp_len : u64      = 31
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M1-002 (#2): ProbeWireProtocol::run honest-witness. rdi=1, rsi=lea [rip+probe_wire_fp], rdx=31, rax=1 (sys_write), syscall. `cmp rax, 0; jl probe_wire_fail`. Success: xor rax, rax; ret. Failure: mov rax, 1; ret. Labels prefixed probe_wire_.",
+      block: {
+        mov rdi, 1;
+        lea rsi, [rip + probe_wire_fp];
+        mov rdx, 31;
+        mov rax, 1;
+        syscall;
+
+        cmp rax, 0;
+        jl probe_wire_fail;
+
+        xor rax, rax;
+        ret;
+
+      probe_wire_fail:
+        mov rax, 1;
+        ret;
+      }
+    }
+
+}

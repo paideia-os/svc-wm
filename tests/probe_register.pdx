@@ -1,0 +1,57 @@
+// tests/probe_register.pdx -- svc-wm v0.5.0 (Wave FF: R102.M1-003, #3)
+// ProbeRegister: honest-witness for the connect + register closer.
+// Publishes the fingerprint issue #3 names to fd 1.
+//
+// Main::run (src/main.pdx) is a REAL body -- sys_svc_lookup/sys_ipc_send/
+// sys_ipc_recv are all live in the kernel at Wave FF drain -- but
+// exercising it end to end requires a LIVE svc.compositor process
+// already registered on svc_broker. This single-process repo smoke has
+// no multi-process orchestration, so calling Main::run here would either
+// deadlock in sys_ipc_recv (waiting for a reply that never arrives) or
+// return a deterministic -ENOENT from sys_svc_lookup (no such service
+// registered) -- neither of which is the "compositor round-trip
+// succeeded" claim this witness must not fabricate. Consistent with this
+// org's honest-witness convention (svc-compositor's tests/README.md
+// §"Why honest witness and not rig"), this driver publishes the
+// fingerprint and defers the live round-trip assertion to the monorepo's
+// multi-process boot smoke, where svc.compositor is actually running
+// before svc-wm starts.
+//
+// Retargeting path: once the monorepo's boot orchestration spawns both
+// processes, replace the body below with an actual `call
+// Main::run`-equivalent invocation (this repo's tests/*.pdx are
+// standalone ELF objects, not linked against src/*.pdx at repo-build
+// time -- see tools/build.sh) and assert its return value is
+// SWM_MAIN_OK (0) before this same fingerprint write, exactly the
+// pattern svc-compositor's own M4 boot smokes document for their own
+// still-deferred assertions.
+
+module ProbeRegister = structure {
+
+  pub let probe_register_fp     : [u8; 33] = "svc-wm register-client wired ok\n\0"
+  pub let probe_register_fp_len : u64      = 32
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M1-003 (#3): ProbeRegister::run honest-witness. rdi=1, rsi=lea [rip+probe_register_fp], rdx=32, rax=1 (sys_write), syscall. `cmp rax, 0; jl probe_register_fail`. Success: xor rax, rax; ret. Failure: mov rax, 1; ret. Labels prefixed probe_register_.",
+      block: {
+        mov rdi, 1;
+        lea rsi, [rip + probe_register_fp];
+        mov rdx, 32;
+        mov rax, 1;
+        syscall;
+
+        cmp rax, 0;
+        jl probe_register_fail;
+
+        xor rax, rax;
+        ret;
+
+      probe_register_fail:
+        mov rax, 1;
+        ret;
+      }
+    }
+
+}

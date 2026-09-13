@@ -1,0 +1,190 @@
+// src/main.pdx -- svc-wm v0.5.0 (Wave FF: R102.M1-003, #3)
+// Main module: process entry point -- connect to svc.compositor + register.
+//
+// Purpose
+// -------
+// On start, resolve `svc.compositor` to a local capability slot via
+// `sys_svc_lookup` (sysno 43), send a REGISTER_CLIENT frame over
+// `sys_ipc_send` (sysno 42), and await the REGISTER_OK reply over
+// `sys_ipc_recv` (sysno 40). All three syscalls are LIVE in the
+// paideia-os kernel at Wave FF drain (src/kernel/core/syscall/handlers/
+// sys_svc_lookup.pdx, sys_ipc_send.pdx, sys_ipc_recv.pdx, all landed at
+// R20b.M3), so this is a REAL body, not a deferred stub -- unlike
+// svc-compositor's own M1-003 (broker_accept.pdx), which stubbed its
+// accept-loop body because sys_ipc_recv was not yet frozen at that
+// repo's own Wave Y drain time.
+//
+// Wire shape: design/wire-protocol.md §2.1 (REGISTER_CLIENT / REGISTER_OK).
+// Frame = 8-byte generic header (op, ver, reply_endpoint_id, payload_len)
+// + 56-byte svc-wm payload, 64 bytes total, built in `swm_frame_buf` and
+// reused for both the outbound send and the inbound reply read.
+//
+// Same-endpoint reply assumption (documented risk)
+// -------------------------------------------------
+// This v0 wire protocol uses `reply_endpoint_id = 0` (userspace-server-
+// substrate.md §4.4 option A, "legacy reply-on-source"): the recv call
+// below reuses the SAME cap_slot the lookup returned. This assumes the
+// broker's rights_gate for a `svc.compositor` client-side lookup hands
+// out a cap sufficient for both send and the immediate reply drain
+// (either R_IPC_ALL, or a same-endpoint round-trip discipline the
+// broker's registration for `svc.compositor`'s client endpoint
+// guarantees). If profiling/integration testing at the monorepo's
+// multi-process boot smoke shows the lookup-returned cap is send-only,
+// the dual-endpoint upgrade (client mints its own reply endpoint, sets
+// `reply_endpoint_id` non-zero in the request header) is the documented
+// fallback -- see design/wire-protocol.md §1.
+//
+// paideia-as compliance
+// ---------------------
+//   - Module Main (PascalCase of main.pdx stem).
+//   - No `test rN,rN` -- every zero-check is `cmp rax, 0` / `cmp reg, 0`.
+//   - No `and rN, imm64` on r8-r15 -- the header pack below uses `shl`/
+//     `or` on rax/rcx only.
+//   - No 2-op `imul` -- no multiplication anywhere in this file.
+//   - No `neg` -- negative-return checks are `cmp rax, 0; jl ...`.
+//   - No sil/dil/bl byte-register aliases -- every field write is a
+//     full-width (qword) `mov` through rax, never a per-byte store.
+//   - No Intel `dword ptr` / `qword ptr` size directives -- every
+//     immediate-to-memory write is avoided by building the value in a
+//     register first, then doing one register-sized `mov [addr], reg`.
+//   - Reserved-label discipline: every label prefixed `wm_main_`.
+//   - rbx is the only callee-saved register this function touches
+//     (holds cap_slot across the send + recv syscalls); pushed once at
+//     entry, popped on every return path. No nested `call` in this
+//     file, so no rsp%16==0 CALL-site obligation beyond the entry
+//     convention itself.
+//
+// Upstream: design/graphics/r102-user-plan.md §4.5 R102.M1-003
+// (paideia-os monorepo); this repo's #3; design/wire-protocol.md §2.1.
+
+module Main = structure {
+
+  // -- Wire ordinals (hand-synchronized with caps.decl) ----------------
+  pub let SWM_REQ_REGISTER_CLIENT : u64 = 0x01
+  pub let SWM_REPLY_REGISTER_OK   : u64 = 0x81
+
+  // -- Return codes ------------------------------------------------------
+  pub let SWM_MAIN_OK                : u64 = 0   // registered
+  pub let SWM_MAIN_ERR_LOOKUP        : u64 = 1   // sys_svc_lookup failed
+  pub let SWM_MAIN_ERR_SEND          : u64 = 2   // sys_ipc_send failed
+  pub let SWM_MAIN_ERR_RECV          : u64 = 3   // sys_ipc_recv failed
+  pub let SWM_MAIN_ERR_REPLY_MISMATCH: u64 = 4   // reply op != REGISTER_OK
+
+  // svc.compositor's registered broker name. Byte-for-byte identical to
+  // svc-compositor's own SCC_BROKER_NAME (src/broker_accept.pdx there).
+  pub let swm_svc_compositor_name     : [u8; 16] = "svc.compositor\0\0"
+  pub let swm_svc_compositor_name_len : u64      = 14
+
+  // This service's own client identity, written into the REGISTER_CLIENT
+  // payload's client_name field (16 bytes, NUL-padded).
+  pub let swm_client_name : [u8; 16] = "svc-wm\0\0\0\0\0\0\0\0\0\0"
+
+  // 64-byte frame scratch: buf[0..8) = generic header, buf[8..64) =
+  // svc-wm payload. Reused for both the outbound REGISTER_CLIENT send
+  // and the inbound REGISTER_OK reply read (single in-flight message
+  // per endpoint at this substrate's current discipline, so reuse is
+  // safe -- the reply overwrite only happens after the send has already
+  // handed its bytes to the kernel).
+  pub let mut swm_frame_buf : [u8; 64] = uninit @align(8)
+
+  // run() -> u64 -- connect + register entry point.
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M1-003 (#3): Main::run. (1) sys_svc_lookup(rdi=&swm_svc_compositor_name, rsi=14, rax=43); syscall; negative rax -> SWM_MAIN_ERR_LOOKUP (1). (2) Zero-fill swm_frame_buf (8x qword stores -- defensive against any future toolchain change to `uninit`'s zero-fill guarantee; matches gfx_damage_reset's own explicit-zero discipline rather than relying on an implicit one). (3) Pack the 8-byte header into rax via shl/or (op=0x01, ver=1, reply_endpoint_id=0, payload_len=56) and store with one qword mov -- sidesteps the banned dword/qword-ptr immediate-to-memory form entirely. (4) sys_getpid (rax=39; syscall; no args) -> client_pid, stored at payload+0. (5) Copy the 16-byte swm_client_name literal into payload+8 via two qword movs. (6) sys_ipc_send(rdi=cap_slot, rsi=&buf, rdx=&buf+8, r10=56, rax=42); syscall; negative rax -> SWM_MAIN_ERR_SEND (2). (7) sys_ipc_recv(rdi=cap_slot [same-endpoint reply assumption, see module header], rsi=&buf, rdx=&buf+8, r10=56, rax=40); syscall; negative rax -> SWM_MAIN_ERR_RECV (3). (8) Read the reply header qword, mask byte 0 via `and rax, 0xFF` (avoids any byte-register alias), compare against 0x81 (SWM_REPLY_REGISTER_OK); mismatch -> SWM_MAIN_ERR_REPLY_MISMATCH (4); match -> return 0. rbx holds cap_slot across steps (2)..(8) (SYSCALL clobbers rcx/r11 only, so rbx survives every syscall in this sequence untouched); pushed once at entry, popped on every one of the five return paths. Labels prefixed wm_main_.",
+      block: {
+        push rbx;
+
+        lea rdi, [rip + swm_svc_compositor_name];
+        mov rsi, 14;
+        mov rax, 43;                        // SC+ ID 43 = sys_svc_lookup
+        syscall;
+        cmp rax, 0;
+        jl wm_main_lookup_fail;
+        mov rbx, rax;                       // cap_slot
+
+        // Zero-fill the 64-byte frame (8 qword stores).
+        xor rax, rax;
+        mov [rip + swm_frame_buf + 0], rax;
+        mov [rip + swm_frame_buf + 8], rax;
+        mov [rip + swm_frame_buf + 16], rax;
+        mov [rip + swm_frame_buf + 24], rax;
+        mov [rip + swm_frame_buf + 32], rax;
+        mov [rip + swm_frame_buf + 40], rax;
+        mov [rip + swm_frame_buf + 48], rax;
+        mov [rip + swm_frame_buf + 56], rax;
+
+        // Pack header: op=0x01, ver=1, reply_endpoint_id=0, payload_len=56.
+        mov rax, 1;                         // op = REGISTER_CLIENT
+        mov rcx, 1;                         // ver = 1
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;                        // payload_len = 56
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_frame_buf + 0], rax;
+
+        // client_pid via sys_getpid (sysno 39, no args).
+        mov rax, 39;
+        syscall;
+        mov [rip + swm_frame_buf + 8], rax;
+
+        // client_name (16 bytes, 2 qwords) at payload offset 8 (buf+16).
+        mov rax, [rip + swm_client_name + 0];
+        mov [rip + swm_frame_buf + 16], rax;
+        mov rax, [rip + swm_client_name + 8];
+        mov [rip + swm_frame_buf + 24], rax;
+
+        // sys_ipc_send(cap_slot, hdr_va, payload_va, payload_len).
+        mov rdi, rbx;
+        lea rsi, [rip + swm_frame_buf];
+        lea rdx, [rip + swm_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;                        // SC+ ID 42 = sys_ipc_send
+        syscall;
+        cmp rax, 0;
+        jl wm_main_send_fail;
+
+        // sys_ipc_recv(cap_slot, out_hdr_va, out_payload_va, out_payload_cap).
+        mov rdi, rbx;
+        lea rsi, [rip + swm_frame_buf];
+        lea rdx, [rip + swm_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 40;                        // SC+ ID 40 = sys_ipc_recv
+        syscall;
+        cmp rax, 0;
+        jl wm_main_recv_fail;
+
+        // Check reply op == REGISTER_OK (0x81).
+        mov rax, [rip + swm_frame_buf + 0];
+        and rax, 0xFF;
+        cmp rax, 0x81;
+        jne wm_main_reply_bad;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      wm_main_lookup_fail:
+        pop rbx;
+        mov rax, 1;
+        ret;
+
+      wm_main_send_fail:
+        pop rbx;
+        mov rax, 2;
+        ret;
+
+      wm_main_recv_fail:
+        pop rbx;
+        mov rax, 3;
+        ret;
+
+      wm_main_reply_bad:
+        pop rbx;
+        mov rax, 4;
+        ret;
+      }
+    }
+
+}

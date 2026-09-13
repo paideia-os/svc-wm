@@ -26,15 +26,19 @@ Per the plan, this repo lands across five milestones:
 - **M4** — smokes: tile arithmetic, focus cycle, palette dispatch
 - **M5** — signed 1.0.0 release
 
-Every issue is filed against one of these five milestones; see the Issues tab.
+Every issue is filed against one of these five milestones; see the Issues
+tab. **M1 and M2 landed at v0.5.0** — see `STATUS.md` for the per-issue
+checklist.
 
 ## Scaffolding
 
-No code lands with this repo scaffold — scaffolding lives in the M1
-issues (`caps.decl`, `src/` skeleton, public API stubs, argv parsing).
-Repo shape mirrors R100 satellites: paideia-as manifest at root,
-`caps.decl` at root, `src/` module tree, `tests/`, `release/`,
-`doc/<name>.pdxdoc`, dual-signed `manifest.pdxsig` at 1.0.0.
+As of v0.5.0, M1 (repo scaffold, `caps.decl`, frozen wire protocol,
+connect + register) and M2 (tiling policy, focus outline decoration)
+have landed — see `STATUS.md` for the per-milestone checklist and
+`CHANGELOG.md` for the full v0.5.0 closer. Repo shape mirrors R100
+satellites: `manifest.pdxsig` + `caps.decl` at root, `src/` module tree,
+`tests/`, a dual-signed `manifest.pdxsig` refresh at the eventual 1.0.0
+release.
 
 ## License
 
