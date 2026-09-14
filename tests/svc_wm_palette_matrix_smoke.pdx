@@ -1,0 +1,129 @@
+// tests/svc_wm_palette_matrix_smoke.pdx -- svc-wm v1.1.0 (Wave PPP: SVC-WM-05)
+// SvcWmPaletteMatrixSmoke: REAL assertion witness over
+// Palette::palette_dispatch's full 3-command matrix (CLOSE_FOCUSED,
+// SWAP_COLUMNS, QUIT_WM), dispatched sequentially against a fresh
+// (zero-surface) tiling state.
+//
+// tests/svc_wm_palette_smoke.pdx (#11) already covers CLOSE_FOCUSED with
+// one surface attached (exercising tiling_focus_close's real lookup-
+// attempt path). This driver instead sweeps all three known commands
+// back to back with NO surfaces attached, pinning each branch's
+// deterministic, live-compositor-independent return code and the
+// `swm_palette_last_action` mock-dispatch signal `palette_dispatch`
+// records BEFORE its own downstream call (src/palette.pdx module header,
+// "Command table + mock dispatch signal"): CLOSE_FOCUSED hits
+// tiling_focus_close's own count==0 guard (SWM_TILE_ERR_NOTFOUND,
+// verbatim passthrough, no syscall attempted); SWAP_COLUMNS's count<2
+// guard skips the swap and the `tiling_emit_moves` call entirely
+// (returns 0); QUIT_WM always returns 0 and additionally sets the
+// `swm_palette_quit_requested` placeholder flag.
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held); the SWM_TILE_ERR_NOTFOUND sentinel is
+// loaded into r11 before the compare (this org's wide-immediate-cmp
+// pitfall), same idiom as tests/svc_wm_palette_smoke.pdx. One padding
+// push at entry, no other push/pop until final cleanup, so rsp%16==0
+// holds at all three nested `call palette_dispatch` sites. Labels
+// prefixed `spm_`.
+
+module SvcWmPaletteMatrixSmoke = structure {
+
+  pub let svc_wm_palette_matrix_smoke_fp     : [u8; 26] = "svc-wm palette-matrix ok\n\0"
+  pub let svc_wm_palette_matrix_smoke_fp_len : u64      = 25
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.PPP.SVC-WM-05: SvcWmPaletteMatrixSmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0). Three `call palette_dispatch` sites in sequence (cmd_id 1, 2, 3) against a fresh zero-surface tiling state (no `tiling_attach` calls in this driver). cmd 1 (CLOSE_FOCUSED): return compared against Tiling::SWM_TILE_ERR_NOTFOUND via an r11-loaded cmp (tiling_focus_close's own count==0 guard, hit verbatim through palette_dispatch's passthrough). cmd 2 (SWAP_COLUMNS): return compared against 0 directly (count<2 guard skips the swap and the downstream tiling_emit_moves call). cmd 3 (QUIT_WM): return compared against 0 directly, plus a follow-up read of `[rip + swm_palette_quit_requested]` expecting 1. After each dispatch, `[rip + swm_palette_last_action]` is re-read and compared against that dispatch's own cmd_id, and `[rip + swm_palette_open]` is re-read expecting 0 (every known command closes the palette regardless of its downstream call's outcome). Every check uses the 'cmp; je <skip>; mov rbx,<code>' first-failure idiom. Final `cmp rbx,0; jne spm_fail` gates the fingerprint write. Labels prefixed spm_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        // cmd 1: PALETTE_CMD_CLOSE_FOCUSED.
+        mov rdi, 1;
+        call palette_dispatch;
+        mov r11, 0xFFFFFFFFFFFFFFFD;         // Tiling::SWM_TILE_ERR_NOTFOUND
+        cmp rax, r11;
+        je spm_d1_ret_ok;
+        mov rbx, 1;
+      spm_d1_ret_ok:
+
+        mov rax, [rip + swm_palette_last_action];
+        cmp rax, 1;
+        je spm_d1_act_ok;
+        mov rbx, 2;
+      spm_d1_act_ok:
+
+        mov rax, [rip + swm_palette_open];
+        cmp rax, 0;
+        je spm_d1_open_ok;
+        mov rbx, 3;
+      spm_d1_open_ok:
+
+        // cmd 2: PALETTE_CMD_SWAP_COLUMNS.
+        mov rdi, 2;
+        call palette_dispatch;
+        cmp rax, 0;
+        je spm_d2_ret_ok;
+        mov rbx, 4;
+      spm_d2_ret_ok:
+
+        mov rax, [rip + swm_palette_last_action];
+        cmp rax, 2;
+        je spm_d2_act_ok;
+        mov rbx, 5;
+      spm_d2_act_ok:
+
+        mov rax, [rip + swm_palette_open];
+        cmp rax, 0;
+        je spm_d2_open_ok;
+        mov rbx, 6;
+      spm_d2_open_ok:
+
+        // cmd 3: PALETTE_CMD_QUIT_WM.
+        mov rdi, 3;
+        call palette_dispatch;
+        cmp rax, 0;
+        je spm_d3_ret_ok;
+        mov rbx, 7;
+      spm_d3_ret_ok:
+
+        mov rax, [rip + swm_palette_last_action];
+        cmp rax, 3;
+        je spm_d3_act_ok;
+        mov rbx, 8;
+      spm_d3_act_ok:
+
+        mov rax, [rip + swm_palette_open];
+        cmp rax, 0;
+        je spm_d3_open_ok;
+        mov rbx, 9;
+      spm_d3_open_ok:
+
+        mov rax, [rip + swm_palette_quit_requested];
+        cmp rax, 1;
+        je spm_d3_quit_ok;
+        mov rbx, 10;
+      spm_d3_quit_ok:
+
+        cmp rbx, 0;
+        jne spm_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_palette_matrix_smoke_fp];
+        mov rdx, 25;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      spm_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

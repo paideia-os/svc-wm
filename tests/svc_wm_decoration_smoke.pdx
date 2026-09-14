@@ -1,0 +1,175 @@
+// tests/svc_wm_decoration_smoke.pdx -- svc-wm v1.1.0 (Wave PPP: SVC-WM-03)
+// SvcWmDecorationSmoke: REAL assertion witness over Decoration's
+// decorate/un-decorate directive construction, captured via the module's
+// own published frame-scratch buffer.
+//
+// Decoration::decoration_on_focus_change always issues a real
+// sys_svc_lookup before either of its two decoration_send calls, so a
+// focus CHANGE (any new_focus_id != the currently-decorated one) cannot
+// reach either send in this single-process smoke -- same cross-process
+// boundary tests/probe_decoration.pdx already documents for #5, and this
+// driver adds a real assertion of exactly that: the first-ever focus
+// change (0 -> 100) takes the real (non-guard) branch and returns the
+// deterministic SWM_DECO_ERR_LOOKUP, with swm_decoration_focused_id left
+// uncommitted (still 0) on that failure.
+//
+// To still exercise the decorate/un-decorate DIRECTIVE construction for
+// real (Decoration::decoration_send is a leaf: it builds the full
+// WM_SET_FOCUS frame in swm_deco_frame_buf BEFORE the syscall that
+// needs a live compositor), this driver calls decoration_send directly
+// with an intentionally-invalid cap_slot (0 -- never a valid slot at
+// this substrate, matching Focus module's own "slot 0 is never valid"
+// convention). The send itself deterministically fails
+// (SWM_DECO_ERR_SEND), but the frame decoration_send wrote into
+// swm_deco_frame_buf BEFORE that failing syscall is fully real and
+// independently observable -- reading it back is this driver's "mock
+// ipc_send capture" of decorate(100), un-decorate(100), and decorate(101)
+// in sequence.
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held); wide sentinel compares (SWM_DECO_ERR_LOOKUP,
+// SWM_DECO_ERR_SEND) go through an r11 load before the register-to-
+// register cmp (this org's wide-immediate-cmp pitfall). One padding push
+// at entry, no other push/pop until final cleanup, so rsp%16==0 holds at
+// every nested `call` site. Labels prefixed `sds_`.
+
+module SvcWmDecorationSmoke = structure {
+
+  pub let svc_wm_decoration_smoke_fp     : [u8; 30] = "svc-wm decoration-capture ok\n\0"
+  pub let svc_wm_decoration_smoke_fp_len : u64      = 29
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.PPP.SVC-WM-03: SvcWmDecorationSmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0). `call tiling_attach(100)` seeds the surface being focused. `call decoration_on_focus_change(100)` from the fresh-boot swm_decoration_focused_id==0 default takes the real (non-guard) branch; its return is compared against Decoration::SWM_DECO_ERR_LOOKUP via an r11-loaded cmp, and swm_decoration_focused_id is re-read to confirm it stays 0 (uncommitted on failure). Three direct `call decoration_send(cap_slot=0, surface_id, border_rgb, border_width_px)` sites follow -- decorate(100,0x00A0FF,2), un-decorate(100,0,0), decorate(101,0x00A0FF,2) -- each asserted to return SWM_DECO_ERR_SEND (r11-loaded cmp, invalid cap_slot) and each followed by 2-3 `[rip + swm_deco_frame_buf + <offset>]` reads confirming the frame decoration_send built (surface_id at +8, border_rgb at +16, border_width_px at +24) before its own failing syscall. Every check uses the 'cmp; je <skip>; mov rbx,<code>' first-failure idiom. Final `cmp rbx,0; jne sds_fail` gates the fingerprint write. Labels prefixed sds_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 100;
+        call tiling_attach;
+        cmp rax, 0;
+        je sds_at_ok;
+        mov rbx, 1;
+      sds_at_ok:
+
+        mov rdi, 100;
+        call decoration_on_focus_change;
+        mov r11, 0xFFFFFFFFFFFFFFFA;         // Decoration::SWM_DECO_ERR_LOOKUP
+        cmp rax, r11;
+        je sds_focus_ret_ok;
+        mov rbx, 2;
+      sds_focus_ret_ok:
+
+        mov rax, [rip + swm_decoration_focused_id];
+        cmp rax, 0;
+        je sds_focus_uncommitted_ok;
+        mov rbx, 3;
+      sds_focus_uncommitted_ok:
+
+        // decorate(100) -- cap_slot=0 (invalid), surface_id=100,
+        // border_rgb=0x00A0FF, border_width_px=2.
+        mov rdi, 0;
+        mov rsi, 100;
+        mov rdx, 0x00A0FF;
+        mov rcx, 2;
+        call decoration_send;
+        mov r11, 0xFFFFFFFFFFFFFFF9;         // Decoration::SWM_DECO_ERR_SEND
+        cmp rax, r11;
+        je sds_d1_ret_ok;
+        mov rbx, 4;
+      sds_d1_ret_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 8];
+        cmp rax, 100;
+        je sds_d1_sid_ok;
+        mov rbx, 5;
+      sds_d1_sid_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 16];
+        cmp rax, 0x00A0FF;
+        je sds_d1_rgb_ok;
+        mov rbx, 6;
+      sds_d1_rgb_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 24];
+        cmp rax, 2;
+        je sds_d1_w_ok;
+        mov rbx, 7;
+      sds_d1_w_ok:
+
+        // un-decorate(100) -- border_rgb=0, border_width_px=0.
+        mov rdi, 0;
+        mov rsi, 100;
+        mov rdx, 0;
+        mov rcx, 0;
+        call decoration_send;
+        mov r11, 0xFFFFFFFFFFFFFFF9;
+        cmp rax, r11;
+        je sds_d2_ret_ok;
+        mov rbx, 8;
+      sds_d2_ret_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 8];
+        cmp rax, 100;
+        je sds_d2_sid_ok;
+        mov rbx, 9;
+      sds_d2_sid_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 24];
+        cmp rax, 0;
+        je sds_d2_w_ok;
+        mov rbx, 10;
+      sds_d2_w_ok:
+
+        // decorate(101) -- new focus target.
+        mov rdi, 0;
+        mov rsi, 101;
+        mov rdx, 0x00A0FF;
+        mov rcx, 2;
+        call decoration_send;
+        mov r11, 0xFFFFFFFFFFFFFFF9;
+        cmp rax, r11;
+        je sds_d3_ret_ok;
+        mov rbx, 11;
+      sds_d3_ret_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 8];
+        cmp rax, 101;
+        je sds_d3_sid_ok;
+        mov rbx, 12;
+      sds_d3_sid_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 16];
+        cmp rax, 0x00A0FF;
+        je sds_d3_rgb_ok;
+        mov rbx, 13;
+      sds_d3_rgb_ok:
+
+        mov rax, [rip + swm_deco_frame_buf + 24];
+        cmp rax, 2;
+        je sds_d3_w_ok;
+        mov rbx, 14;
+      sds_d3_w_ok:
+
+        cmp rbx, 0;
+        jne sds_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_decoration_smoke_fp];
+        mov rdx, 29;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      sds_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

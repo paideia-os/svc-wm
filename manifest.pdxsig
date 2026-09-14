@@ -28,13 +28,13 @@
 format-version:      1
 manifest-schema:     paideia-manifest-pdxsig@1
 package-name:        svc-wm
-package-version:     1.0.0
-package-release:     R102-M5-1.0.0
+package-version:     1.1.0
+package-release:     R102-PPP-1.1.0
 package-kind:        service
 package-license:     MIT
 source-repo:         https://github.com/paideia-os/svc-wm
-source-commit:       <TAG-v1.0.0-src-COMMIT-SHA>   # release tool fills in
-source-tag:          v1.0.0-src
+source-commit:       <TAG-v1.1.0-src-COMMIT-SHA>   # release tool fills in
+source-tag:          v1.1.0-src
 
 # ---------------------------------------------------------------
 # Artifact set -- every file the v0.6.0 tag ships. Hash discipline is
@@ -60,6 +60,10 @@ tests/probe_decoration.pdx                blake3-256 = <BLAKE3-probe_decoration.
 tests/svc_wm_tile_smoke.pdx               blake3-256 = <BLAKE3-svc_wm_tile_smoke.pdx>
 tests/svc_wm_focus_cycle_smoke.pdx        blake3-256 = <BLAKE3-svc_wm_focus_cycle_smoke.pdx>
 tests/svc_wm_palette_smoke.pdx            blake3-256 = <BLAKE3-svc_wm_palette_smoke.pdx>
+tests/svc_wm_tile_geometry_smoke.pdx      blake3-256 = <BLAKE3-svc_wm_tile_geometry_smoke.pdx>
+tests/svc_wm_decoration_smoke.pdx         blake3-256 = <BLAKE3-svc_wm_decoration_smoke.pdx>
+tests/svc_wm_focus_cap_smoke.pdx          blake3-256 = <BLAKE3-svc_wm_focus_cap_smoke.pdx>
+tests/svc_wm_palette_matrix_smoke.pdx     blake3-256 = <BLAKE3-svc_wm_palette_matrix_smoke.pdx>
 
 [artifacts.meta]
 caps.decl                                 blake3-256 = <BLAKE3-caps.decl>

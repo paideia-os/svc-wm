@@ -1,0 +1,186 @@
+// tests/svc_wm_tile_geometry_smoke.pdx -- svc-wm v1.1.0 (Wave PPP: SVC-WM-02)
+// SvcWmTileGeometrySmoke: REAL assertion witness over Tiling::tiling_attach
+// + Tiling::tiling_recompute at the full 8-surface (SWM_TILE_MAX) ceiling.
+//
+// Every other tiling smoke in this repo exercises a partial column count
+// (probe_tiling.pdx: 4 surfaces before its own detach step;
+// svc_wm_tile_smoke.pdx: pure tiling_divide arithmetic only). This driver
+// closes the coverage gap at the actual attach ceiling: attach all 8
+// SWM_TILE_MAX surfaces, call tiling_recompute once, and assert the full
+// 8-column geometry -- column width 1920/8=240 (exact, no remainder) and
+// each row's x offset (0, 240, 480, ..., 1680), plus one y/h spot-check
+// against the stub viewport constants (Tiling module header "Stub
+// viewport").
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held), same idiom as tests/probe_tiling.pdx; one
+// padding push at entry, no other push/pop until final cleanup, so
+// rsp%16==0 holds at every nested `call` site. Row i's geometry quadruple
+// lives at byte offset i*32 within swm_tile_geom (x+0, y+8, w+16, h+24),
+// matching Tiling's own published layout. Labels prefixed `stg_`.
+
+module SvcWmTileGeometrySmoke = structure {
+
+  pub let svc_wm_tile_geometry_smoke_fp     : [u8; 30] = "svc-wm tile-geometry-8col ok\n\0"
+  pub let svc_wm_tile_geometry_smoke_fp_len : u64      = 29
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.PPP.SVC-WM-02: SvcWmTileGeometrySmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0), then eight `call tiling_attach` sites (surface_ids 300..307) each followed by the 'cmp rax,0; je <skip>; mov rbx,<code>' first-failure idiom, then one `call tiling_recompute`. Geometry reads are direct `[rip + swm_tile_geom + <byte offset>]` loads against Tiling's own published layout (row i's x/y/w/h live at 8*(i*4+0..3), i.e. byte offset i*32). Checks: row0 w==240 (1920/8, exact), row0 y==0 and row0 h==1080 (SWM_VIEWPORT_H spot-check), then all eight rows' x offsets (0,240,480,720,960,1200,1440,1680). Final `cmp rbx,0; jne stg_fail` gates the fingerprint write on every assertion having held. Labels prefixed stg_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 300;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a0_ok;
+        mov rbx, 1;
+      stg_a0_ok:
+
+        mov rdi, 301;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a1_ok;
+        mov rbx, 2;
+      stg_a1_ok:
+
+        mov rdi, 302;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a2_ok;
+        mov rbx, 3;
+      stg_a2_ok:
+
+        mov rdi, 303;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a3_ok;
+        mov rbx, 4;
+      stg_a3_ok:
+
+        mov rdi, 304;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a4_ok;
+        mov rbx, 5;
+      stg_a4_ok:
+
+        mov rdi, 305;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a5_ok;
+        mov rbx, 6;
+      stg_a5_ok:
+
+        mov rdi, 306;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a6_ok;
+        mov rbx, 7;
+      stg_a6_ok:
+
+        mov rdi, 307;
+        call tiling_attach;
+        cmp rax, 0;
+        je stg_a7_ok;
+        mov rbx, 8;
+      stg_a7_ok:
+
+        call tiling_recompute;
+        cmp rax, 0;
+        je stg_rc_ok;
+        mov rbx, 9;
+      stg_rc_ok:
+
+        // row0 width (offset 16) -- 1920/8 == 240, exact.
+        mov rax, [rip + swm_tile_geom + 16];
+        cmp rax, 240;
+        je stg_w0_ok;
+        mov rbx, 10;
+      stg_w0_ok:
+
+        // row0 y (offset 8) and h (offset 24) spot-check.
+        mov rax, [rip + swm_tile_geom + 8];
+        cmp rax, 0;
+        je stg_y0_ok;
+        mov rbx, 11;
+      stg_y0_ok:
+
+        mov rax, [rip + swm_tile_geom + 24];
+        cmp rax, 1080;
+        je stg_h0_ok;
+        mov rbx, 12;
+      stg_h0_ok:
+
+        // x offsets: row i base byte offset = i*32.
+        mov rax, [rip + swm_tile_geom + 0];
+        cmp rax, 0;
+        je stg_x0_ok;
+        mov rbx, 13;
+      stg_x0_ok:
+
+        mov rax, [rip + swm_tile_geom + 32];
+        cmp rax, 240;
+        je stg_x1_ok;
+        mov rbx, 14;
+      stg_x1_ok:
+
+        mov rax, [rip + swm_tile_geom + 64];
+        cmp rax, 480;
+        je stg_x2_ok;
+        mov rbx, 15;
+      stg_x2_ok:
+
+        mov rax, [rip + swm_tile_geom + 96];
+        cmp rax, 720;
+        je stg_x3_ok;
+        mov rbx, 16;
+      stg_x3_ok:
+
+        mov rax, [rip + swm_tile_geom + 128];
+        cmp rax, 960;
+        je stg_x4_ok;
+        mov rbx, 17;
+      stg_x4_ok:
+
+        mov rax, [rip + swm_tile_geom + 160];
+        cmp rax, 1200;
+        je stg_x5_ok;
+        mov rbx, 18;
+      stg_x5_ok:
+
+        mov rax, [rip + swm_tile_geom + 192];
+        cmp rax, 1440;
+        je stg_x6_ok;
+        mov rbx, 19;
+      stg_x6_ok:
+
+        mov rax, [rip + swm_tile_geom + 224];
+        cmp rax, 1680;
+        je stg_x7_ok;
+        mov rbx, 20;
+      stg_x7_ok:
+
+        cmp rbx, 0;
+        jne stg_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_tile_geometry_smoke_fp];
+        mov rdx, 29;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      stg_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

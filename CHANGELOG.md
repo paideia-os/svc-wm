@@ -1,5 +1,45 @@
 # svc-wm — CHANGELOG
 
+## 1.1.0-src — 2026-09-13 (Wave PPP: 5 integration test smokes)
+
+Adds four new real-assertion smokes and upgrades `probe_register.pdx`
+from fingerprint-only to real assertions, all without a live
+`svc.compositor`.
+
+### Added
+
+- `tests/svc_wm_tile_geometry_smoke.pdx` (SVC-WM-02) — attaches all 8
+  `SWM_TILE_MAX` surfaces, calls `tiling_recompute`, asserts the full
+  8-column geometry (240px columns at x=0,240,...,1680).
+- `tests/svc_wm_decoration_smoke.pdx` (SVC-WM-03) — calls
+  `decoration_send` directly to capture the decorate(100)/
+  un-decorate(100)/decorate(101) frames it builds, plus asserts
+  `decoration_on_focus_change`'s deterministic lookup-fail path leaves
+  `swm_decoration_focused_id` uncommitted.
+- `tests/svc_wm_focus_cap_smoke.pdx` (SVC-WM-04) — asserts `focus_mint`
+  never returns the reserved 0 sentinel and that `swm_focus_cap_slot`
+  stays consistent with the return value's sign (WEAK-stub-tolerant of
+  today's `sys_cap_mint` ENOSYS floor).
+- `tests/svc_wm_palette_matrix_smoke.pdx` (SVC-WM-05) — dispatches
+  cmd_id 1/2/3 sequentially against a fresh tiling state, asserting
+  `swm_palette_last_action` and the palette-closed signal after each.
+
+### Changed
+
+- `tests/probe_register.pdx` (SVC-WM-01) — upgraded from
+  fingerprint-only to a real assertion: re-issues
+  `sys_svc_lookup`/`sys_ipc_send`/`sys_ipc_recv` directly (not via
+  `Main::run`, to avoid a `run`/`run` link collision between this
+  driver's own entry and `src/main.pdx`'s) and asserts each fails
+  deterministically (no live compositor; cap_slot 0 invalid).
+- `tests/README.md` — driver/fingerprint tables updated for all five
+  changes; "why `probe_register.pdx` stays fingerprint-only" section
+  rewritten to explain the real-assertion upgrade and the `run`/`run`
+  link hazard.
+- `manifest.pdxsig` — artifact set gains the four new smokes;
+  `package-version`/`package-release` bumped to 1.1.0; `source-tag` set
+  to `v1.1.0-src`.
+
 ## 1.0.0-src — 2026-09-13 (Wave YY: M3-002 Alt+Space palette, M4 smokes, M5 signed release)
 
 **Major bump closing the five-issue Wave YY cohort (#8, #9, #10, #11,

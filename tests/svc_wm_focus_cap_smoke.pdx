@@ -1,0 +1,83 @@
+// tests/svc_wm_focus_cap_smoke.pdx -- svc-wm v1.1.0 (Wave PPP: SVC-WM-04)
+// SvcWmFocusCapSmoke: REAL assertion witness over Focus::focus_mint.
+//
+// `sys_cap_mint` (sysno 5) is ENOSYS at HEAD (src/focus.pdx's own module
+// header, "Floor-only sysno (documented kernel gap)"), so this driver
+// cannot assert a genuinely successful mint end to end -- asserting
+// SUCCESS specifically would fabricate a pass this kernel floor does not
+// support yet, contrary to this org's honest-witness convention. What IS
+// real and floor-independent: `focus_mint` must never publish the
+// reserved sentinel 0 into `swm_focus_cap_slot` (module header: "slot 0
+// is never a valid mint result at this substrate") and its return value
+// must be internally consistent with whether it actually committed that
+// publish -- a genuine WEAK-stub-tolerant invariant that holds today
+// (ENOSYS path: return negative, no publish) and will keep holding
+// unchanged the moment the kernel lands a real handler (success path:
+// return the minted slot, publish it verbatim).
+//
+// paideia-as encoder notes: r12 accumulates a "first failure" code
+// (0 = all assertions held); rbx is left untouched (focus_mint's own
+// justification notes it is a leaf touching only caller-save registers,
+// so nothing needs preserving across the call besides the one padding
+// push below). One padding push at entry, no other push/pop until final
+// cleanup, so rsp%16==0 holds at the single nested `call focus_mint`
+// site. Labels prefixed `sfc_`.
+
+module SvcWmFocusCapSmoke = structure {
+
+  pub let svc_wm_focus_cap_smoke_fp     : [u8; 26] = "svc-wm focus-cap-mint ok\n\0"
+  pub let svc_wm_focus_cap_smoke_fp_len : u64      = 25
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.PPP.SVC-WM-04: SvcWmFocusCapSmoke::run real-assertion witness. push r12 once at entry (rsp%16==8 -> %16==0) as both alignment pad and first-failure accumulator. `mov rdi,0 (surface_id/seat); call focus_mint`. Check 1: rax != 0 -- the reserved sentinel (module header) must never be returned, on success OR failure. Check 2 (consistency): `cmp rax,0; jl` splits on rax's sign -- non-negative (a real minted slot) requires `[rip + swm_focus_cap_slot] == rax` (the publish committed exactly what was returned); negative (today's -ENOSYS floor) requires `[rip + swm_focus_cap_slot] == 0` (the fresh-boot default, uncommitted -- focus_mint's own failure path performs no memory write). Both branches converge before the shared `cmp r12,0; jne sfc_fail` gate. Labels prefixed sfc_.",
+      block: {
+        push r12;
+        xor r12, r12;
+
+        mov rdi, 0;
+        call focus_mint;
+
+        cmp rax, 0;
+        jne sfc_nonzero_ok;
+        mov r12, 1;
+      sfc_nonzero_ok:
+
+        cmp rax, 0;
+        jl sfc_neg_path;
+
+        mov rcx, [rip + swm_focus_cap_slot];
+        cmp rcx, rax;
+        je sfc_consistency_done;
+        mov r12, 2;
+        jmp sfc_consistency_done;
+
+      sfc_neg_path:
+        mov rcx, [rip + swm_focus_cap_slot];
+        cmp rcx, 0;
+        je sfc_consistency_done;
+        mov r12, 3;
+
+      sfc_consistency_done:
+        cmp r12, 0;
+        jne sfc_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_focus_cap_smoke_fp];
+        mov rdx, 25;
+        mov rax, 1;
+        syscall;
+
+        pop r12;
+        xor rax, rax;
+        ret;
+
+      sfc_fail:
+        mov rax, r12;
+        pop r12;
+        ret;
+      }
+    }
+
+}
