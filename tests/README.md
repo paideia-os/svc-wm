@@ -24,6 +24,9 @@ this single-repo smoke cannot provide.
 | `probe_register.pdx`         | fingerprint-only | deferred -- needs a live `svc.compositor` | #3 |
 | `probe_tiling.pdx`           | **real**          | attach/detach/recompute/divide arithmetic | #4 |
 | `probe_decoration.pdx`       | **real**          | no-IPC no-op guard path | #5 |
+| `svc_wm_tile_smoke.pdx`      | **real**          | `tiling_divide` arithmetic (3/4-column + remainder) | #9 |
+| `svc_wm_focus_cycle_smoke.pdx` | **real**        | `tiling_focus_advance` modulo-3 wraparound sequence | #10 |
+| `svc_wm_palette_smoke.pdx`   | **real**          | `palette_dispatch` close-focused routing (deterministic lookup-fail path) | #11 |
 
 ## Fingerprint table
 
@@ -34,6 +37,9 @@ this single-repo smoke cannot provide.
 | `probe_register.pdx`           | `svc-wm register-client wired ok\n`   | 32    | #3    |
 | `probe_tiling.pdx`             | `svc-wm tiling policy ok\n`           | 24    | #4    |
 | `probe_decoration.pdx`         | `svc-wm decoration guard ok\n`        | 27    | #5    |
+| `svc_wm_tile_smoke.pdx`        | `svc-wm tile-math ok\n`               | 20    | #9    |
+| `svc_wm_focus_cycle_smoke.pdx` | `svc-wm focus-cycle ok\n`             | 22    | #10   |
+| `svc_wm_palette_smoke.pdx`     | `svc-wm palette-dispatch ok\n`        | 27    | #11   |
 
 ## Why `probe_register.pdx` stays fingerprint-only despite `src/main.pdx`
 being a real body

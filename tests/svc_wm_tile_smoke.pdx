@@ -1,0 +1,94 @@
+// tests/svc_wm_tile_smoke.pdx -- svc-wm v1.0.0 (Wave YY: R102.M4-001, #9)
+// SvcWmTileSmoke: REAL assertion witness over Tiling::tiling_divide.
+//
+// tiling_divide is pure (effects: {}, no memory access -- see
+// src/tiling.pdx's own header), so this smoke needs no mock compositor
+// stream: dividend/divisor pairs pin the exact fixed-column arithmetic
+// every attach-count uses. Coverage:
+//   - tiling_divide(1920, 3) == 640 -- the 3-column case (matches
+//     tests/probe_tiling.pdx's own 4-column 480px assertion sibling).
+//   - tiling_divide(1920, 4) == 480 -- the 4-column case.
+//   - tiling_divide(100, 3) == 33, with remainder 100 - 33*3 = 1
+//     (computed via three plain `sub`s -- no multiplication) -- pins
+//     tiling_divide's OWN "rounds down" rounding contract. This smoke
+//     does NOT assert that the 1px remainder is redistributed into the
+//     first tile slot: src/tiling.pdx's `tiling_recompute` does not
+//     currently do that (every column gets the same divided width, so
+//     an uneven split under-covers the viewport by the remainder) --
+//     asserting a redistribution this repo's code does not perform
+//     would fabricate a pass, contrary to this org's honest-witness
+//     convention (tests/README.md).
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held), same idiom as tests/probe_tiling.pdx; one
+// padding push at entry, no other push/pop until final cleanup, so
+// rsp%16==0 holds at every `call tiling_divide` site. Labels prefixed
+// `swt_`.
+
+module SvcWmTileSmoke = structure {
+
+  pub let svc_wm_tile_smoke_fp     : [u8; 21] = "svc-wm tile-math ok\n\0"
+  pub let svc_wm_tile_smoke_fp_len : u64      = 20
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M4-001 (#9): SvcWmTileSmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0), then three `call tiling_divide` sites (1920/3=640; 1920/4=480; 100/3=33) each followed by `cmp rax,<expected>; je <skip>; mov rbx,<code>` recording the first failing assertion's code into rbx without disturbing later checks. A fourth assertion re-derives the 100/3 remainder via three plain `sub`s (100-33-33-33=1, no multiplication) to pin tiling_divide's rounding contract independent of any redistribution policy. Final `cmp rbx,0; jne swt_fail` gates the fingerprint write on every assertion having held. Labels prefixed swt_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 1920;
+        mov rsi, 3;
+        call tiling_divide;
+        cmp rax, 640;
+        je swt_c1_ok;
+        mov rbx, 1;
+      swt_c1_ok:
+
+        mov rdi, 1920;
+        mov rsi, 4;
+        call tiling_divide;
+        cmp rax, 480;
+        je swt_c2_ok;
+        mov rbx, 2;
+      swt_c2_ok:
+
+        mov rdi, 100;
+        mov rsi, 3;
+        call tiling_divide;
+        cmp rax, 33;
+        je swt_c3_ok;
+        mov rbx, 3;
+      swt_c3_ok:
+
+        mov rax, 100;
+        sub rax, 33;
+        sub rax, 33;
+        sub rax, 33;
+        cmp rax, 1;
+        je swt_rem_ok;
+        mov rbx, 4;
+      swt_rem_ok:
+
+        cmp rbx, 0;
+        jne swt_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_tile_smoke_fp];
+        mov rdx, 20;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      swt_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

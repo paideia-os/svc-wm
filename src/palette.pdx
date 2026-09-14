@@ -1,0 +1,382 @@
+// src/palette.pdx -- svc-wm v1.0.0 (Wave YY: R102.M3-002, #8)
+// Palette module: Alt+Space command palette.
+//
+// Purpose
+// -------
+// On ALT_SPACE_PALETTE (0x0A, caps.decl), the WM opens its own 200x100
+// overlay window centered over the 1920x1080 stub viewport (the same
+// stub `Tiling` uses -- see that module's header "Stub viewport"), and
+// renders a 3-command menu (swap-columns, close-focused, quit-wm) via
+// libpdx-gfx-style directives issued to `svc.compositor.wm`. On
+// dispatch (click / Enter -> `palette_dispatch`), the selected command
+// fires and the palette closes. Per design/graphics/r102-user-plan.md
+// §4.5 R102.M3-002: "Palette itself is a regular window and appears in
+// list-windows queries" -- true here in spirit only: this module does
+// not mint a real KIND_SURFACE for the overlay (svc.compositor is the
+// sole KIND_SURFACE authority, r113-m1-substrate.md; no SURFACE_CREATE
+// wire op is frozen on `svc.compositor.wm` at any version to date --
+// see "Forward-declared ordinals" below), so `SWM_PALETTE_SURFACE_ID`
+// is a WM-owned pseudo-id the overlay's SURFACE_MOVE/BLIT frames quote,
+// not a compositor-minted handle a QUERY_LIST_WINDOWS round trip would
+// actually enumerate. Documented risk, same posture `src/tiling.pdx`'s
+// "Wave VV addendum" already established for `WM_CLOSE_WINDOW`.
+//
+// Forward-declared ordinals
+// --------------------------
+// `SWM_OUT_SURFACE_MOVE = 0x10` is svc-compositor's own frozen
+// `WM_PLACE_WINDOW` ordinal (already ridden by `src/tiling.pdx`), reused
+// here to position the overlay. `SWM_OUT_WM_BLIT = 0x13` is svc-wm's OWN
+// forward declaration (svc-compositor's caps.decl v1.2.0 freezes only
+// `0x01/0x02/0x10/0x11/0x20..0x23` -- no BLIT op), continuing the
+// forward-declared range `src/tiling.pdx` opened at `WM_CLOSE_WINDOW =
+// 0x12` (#6). The frame ships at its real wire shape today; no further
+// change is needed here once svc-compositor freezes `request.WM_BLIT =
+// 0x13` on its side. Until then this is an ordinary "unrecognized
+// opcode at the peer is a no-op" send, same disposition as
+// `WM_CLOSE_WINDOW`'s own documented risk.
+//
+// Command table + mock dispatch signal
+// --------------------------------------
+// `_palette_cmds` is an 8-entry `.bss` table of `u64` cmd_id values
+// (`SWM_PALETTE_MAX = 8`, matching `Tiling::SWM_TILE_MAX`'s own ceiling
+// convention even though only 3 slots are populated at v1.0.0). Display
+// order (slot 0..2) is swap-columns/close-focused/quit-wm, matching the
+// issue's menu ordering; cmd_id NUMBERING is independent of display
+// order (`PALETTE_CMD_CLOSE_FOCUSED = 1`, the primary/most-tested
+// command). `swm_palette_last_action` publishes the most recent cmd_id
+// `palette_dispatch` routed to, written BEFORE the branch's own
+// (possibly IPC-dependent) downstream call -- this is the "mock CLOSE
+// sent" signal `tests/svc_wm_palette_smoke.pdx` (#11) asserts on,
+// letting a single-process smoke with no live `svc.compositor` verify
+// dispatch routed correctly without depending on that downstream call's
+// own success or failure. `swm_palette_quit_requested` is a similar
+// placeholder: no real `sys_ipc_recv` server loop exists yet to consume
+// it (STATUS.md's own open item), so quit-wm only records intent.
+//
+// paideia-as compliance
+// ---------------------
+//   - Module Palette (PascalCase of palette.pdx stem).
+//   - No `test rN,rN`; no `and rN,imm64` on r8-r15; no 2-op `imul`; no
+//     `neg`; no byte-register aliases; no Intel dword/qword ptr
+//     immediate-to-memory writes; every wide (>imm32) comparison loads
+//     the constant into r11 first and compares register-to-register.
+//   - palette_dispatch takes exactly 1 argument; palette_open takes 0.
+//   - `palette_open` is a leaf (only raw `syscall`s, no nested `call`)
+//     so it carries no rsp%16==0 CALL-site obligation; cap_slot is held
+//     in r9 (caller-save under SysV; SYSCALL clobbers rcx/r11 only,
+//     matching this org's established syscall-clobber convention) so no
+//     push/pop is needed despite five syscalls in sequence.
+//     `palette_dispatch` pushes rbx once at entry (SysV hands every
+//     function rsp%16==8 -> 1 push -> %16==0) before its one nested
+//     `call` per taken branch (`tiling_focus_close` or
+//     `tiling_emit_moves`; mutually exclusive, same stack depth either
+//     way).
+//   - Reserved-label discipline: labels prefixed `po_` (palette_open)
+//     and `pd_` (palette_dispatch).
+//
+// Upstream: design/graphics/r102-user-plan.md §4.5 R102.M3-002
+// (paideia-os monorepo); this repo's #8; design/wire-protocol.md §3.
+
+module Palette = structure {
+
+  pub let PALETTE_CMD_NONE          : u64 = 0
+  pub let PALETTE_CMD_CLOSE_FOCUSED : u64 = 1
+  pub let PALETTE_CMD_SWAP_COLUMNS  : u64 = 2
+  pub let PALETTE_CMD_QUIT_WM       : u64 = 3
+
+  pub let PALETTE_ERR_UNKNOWN_CMD   : u64 = 0xFFFFFFFFFFFFFFF6   // -10
+
+  pub let SWM_PALETTE_ERR_LOOKUP    : u64 = 0xFFFFFFFFFFFFFFF8   // -8
+  pub let SWM_PALETTE_ERR_SEND      : u64 = 0xFFFFFFFFFFFFFFF7   // -9
+
+  pub let SWM_PALETTE_MAX       : u64 = 8
+  pub let SWM_PALETTE_CMD_COUNT : u64 = 3
+
+  // WM-owned pseudo-surface id for the overlay -- see module header
+  // "Purpose" for why this is not a compositor-minted KIND_SURFACE.
+  pub let SWM_PALETTE_SURFACE_ID : u64 = 0xFFFFFFFF00000001
+
+  // Centered over the 1920x1080 stub viewport (Tiling's own stub --
+  // see that module's header). Compile-time constants: (1920-200)/2 =
+  // 860, (1080-100)/2 = 490 -- no runtime divide needed.
+  pub let SWM_PALETTE_X : u64 = 860
+  pub let SWM_PALETTE_Y : u64 = 490
+  pub let SWM_PALETTE_W : u64 = 200
+  pub let SWM_PALETTE_H : u64 = 100
+
+  // svc-compositor's frozen WM_PLACE_WINDOW ordinal, reused verbatim
+  // from src/tiling.pdx's own SWM_OUT_SURFACE_MOVE (duplicated per this
+  // repo's established per-module constant convention).
+  pub let SWM_OUT_SURFACE_MOVE : u64 = 0x10
+
+  // svc-wm's OWN forward-declared blit ordinal -- see module header
+  // "Forward-declared ordinals".
+  pub let SWM_OUT_WM_BLIT : u64 = 0x13
+
+  pub let swm_wm_ep_name     : [u8; 16] = "svc.compositor\0\0"
+  pub let swm_wm_ep_name_len : u64      = 14
+
+  // 8-entry dense command table (cmd_id per slot; slots 3..7 stay
+  // PALETTE_CMD_NONE / unused). Populated by palette_open on every open
+  // (idempotent -- always writes the same 3 values).
+  pub let mut _palette_cmds : [u64; 8] = uninit @align(8)
+
+  // Display names, ASCII NUL-padded, 40 bytes each, index-aligned with
+  // _palette_cmds[0..3): "swap-columns", "close-focused", "quit-wm".
+  pub let _palette_names : [u8; 120] = "swap-columns\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0close-focused\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0quit-wm\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+
+  pub let mut swm_palette_open             : u64 = 0   // 0=closed, 1=open
+  pub let mut swm_palette_last_action      : u64 = 0   // see module header
+  pub let mut swm_palette_quit_requested   : u64 = 0   // placeholder, see header
+
+  pub let mut swm_palette_move_frame_buf : [u8; 64] = uninit @align(8)
+  pub let mut swm_palette_blit_frame_buf : [u8; 64] = uninit @align(8)
+
+  // palette_open() -> 0 | SWM_PALETTE_ERR_LOOKUP | SWM_PALETTE_ERR_SEND
+  // Positions the overlay (SURFACE_MOVE, hard-gated) then best-effort
+  // blits the 3 command names (BLIT, not gated -- a missing label is
+  // cosmetic, not functional; see module header "Forward-declared
+  // ordinals").
+  pub let palette_open : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M3-002 (#8) PaletteOpen. Populate _palette_cmds (8 qword stores: slot0=SWAP_COLUMNS(2), slot1=CLOSE_FOCUSED(1), slot2=QUIT_WM(3), slots3..7=NONE(0)) -- display order matches the issue's menu ordering; cmd_id numbering is independent (CLOSE_FOCUSED=1 is the primary/most-tested command, see module header). sys_svc_lookup('svc.compositor', rax=43); negative -> SWM_PALETTE_ERR_LOOKUP; cap_slot parked in r9 (caller-save, survives every syscall below since SYSCALL clobbers rcx/r11 only). Zero-fill + pack a SURFACE_MOVE frame (op=0x10, surface_id=SWM_PALETTE_SURFACE_ID, x=860,y=490,w=200,h=100) via sys_ipc_send (rax=42); negative -> SWM_PALETTE_ERR_SEND. On success, commit swm_palette_open=1, then unroll 3 BLIT sends (op=0x13; payload = surface_id, row_index, 40-byte name slice from _palette_names at literal offsets 0/40/80) -- every one of the frame's 8 qwords is overwritten per send so no inter-iteration zero-fill is needed after the first. BLIT send failures are discarded (best-effort). Leaf throughout (only raw `syscall`s, no nested `call`) -- no push/pop needed. Labels prefixed po_.",
+      block: {
+        mov rax, 2;
+        mov [rip + _palette_cmds + 0], rax;
+        mov rax, 1;
+        mov [rip + _palette_cmds + 8], rax;
+        mov rax, 3;
+        mov [rip + _palette_cmds + 16], rax;
+        xor rax, rax;
+        mov [rip + _palette_cmds + 24], rax;
+        mov [rip + _palette_cmds + 32], rax;
+        mov [rip + _palette_cmds + 40], rax;
+        mov [rip + _palette_cmds + 48], rax;
+        mov [rip + _palette_cmds + 56], rax;
+
+        lea rdi, [rip + swm_wm_ep_name];
+        mov rsi, 14;
+        mov rax, 43;                        // SC+ ID 43 = sys_svc_lookup
+        syscall;
+        cmp rax, 0;
+        jl po_lookup_fail;
+        mov r9, rax;                        // cap_slot
+
+        xor rax, rax;
+        mov [rip + swm_palette_move_frame_buf + 0], rax;
+        mov [rip + swm_palette_move_frame_buf + 8], rax;
+        mov [rip + swm_palette_move_frame_buf + 16], rax;
+        mov [rip + swm_palette_move_frame_buf + 24], rax;
+        mov [rip + swm_palette_move_frame_buf + 32], rax;
+        mov [rip + swm_palette_move_frame_buf + 40], rax;
+        mov [rip + swm_palette_move_frame_buf + 48], rax;
+        mov [rip + swm_palette_move_frame_buf + 56], rax;
+
+        mov rax, 0x10;                      // op = SWM_OUT_SURFACE_MOVE
+        mov rcx, 1;                         // ver = 1
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;                        // payload_len = 56
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_palette_move_frame_buf + 0], rax;
+
+        mov rax, 0xFFFFFFFF00000001;        // SWM_PALETTE_SURFACE_ID
+        mov [rip + swm_palette_move_frame_buf + 8], rax;
+        mov rax, 860;                       // SWM_PALETTE_X
+        mov [rip + swm_palette_move_frame_buf + 16], rax;
+        mov rax, 490;                       // SWM_PALETTE_Y
+        mov [rip + swm_palette_move_frame_buf + 24], rax;
+        mov rax, 200;                       // SWM_PALETTE_W
+        mov [rip + swm_palette_move_frame_buf + 32], rax;
+        mov rax, 100;                       // SWM_PALETTE_H
+        mov [rip + swm_palette_move_frame_buf + 40], rax;
+
+        mov rdi, r9;
+        lea rsi, [rip + swm_palette_move_frame_buf];
+        lea rdx, [rip + swm_palette_move_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;                        // SC+ ID 42 = sys_ipc_send
+        syscall;
+        cmp rax, 0;
+        jl po_send_fail;
+
+        mov rax, 1;
+        mov [rip + swm_palette_open], rax;
+
+        // BLIT row 0: "swap-columns" (cmd_id 2, names offset 0).
+        mov rax, 0x13;                      // op = SWM_OUT_WM_BLIT
+        mov rcx, 1;
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_palette_blit_frame_buf + 0], rax;
+        mov rax, 0xFFFFFFFF00000001;
+        mov [rip + swm_palette_blit_frame_buf + 8], rax;
+        xor rax, rax;
+        mov [rip + swm_palette_blit_frame_buf + 16], rax;
+        mov rax, [rip + _palette_names + 0];
+        mov [rip + swm_palette_blit_frame_buf + 24], rax;
+        mov rax, [rip + _palette_names + 8];
+        mov [rip + swm_palette_blit_frame_buf + 32], rax;
+        mov rax, [rip + _palette_names + 16];
+        mov [rip + swm_palette_blit_frame_buf + 40], rax;
+        mov rax, [rip + _palette_names + 24];
+        mov [rip + swm_palette_blit_frame_buf + 48], rax;
+        mov rax, [rip + _palette_names + 32];
+        mov [rip + swm_palette_blit_frame_buf + 56], rax;
+        mov rdi, r9;
+        lea rsi, [rip + swm_palette_blit_frame_buf];
+        lea rdx, [rip + swm_palette_blit_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;
+        syscall;
+
+        // BLIT row 1: "close-focused" (cmd_id 1, names offset 40).
+        mov rax, 0x13;
+        mov rcx, 1;
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_palette_blit_frame_buf + 0], rax;
+        mov rax, 0xFFFFFFFF00000001;
+        mov [rip + swm_palette_blit_frame_buf + 8], rax;
+        mov rax, 1;
+        mov [rip + swm_palette_blit_frame_buf + 16], rax;
+        mov rax, [rip + _palette_names + 40];
+        mov [rip + swm_palette_blit_frame_buf + 24], rax;
+        mov rax, [rip + _palette_names + 48];
+        mov [rip + swm_palette_blit_frame_buf + 32], rax;
+        mov rax, [rip + _palette_names + 56];
+        mov [rip + swm_palette_blit_frame_buf + 40], rax;
+        mov rax, [rip + _palette_names + 64];
+        mov [rip + swm_palette_blit_frame_buf + 48], rax;
+        mov rax, [rip + _palette_names + 72];
+        mov [rip + swm_palette_blit_frame_buf + 56], rax;
+        mov rdi, r9;
+        lea rsi, [rip + swm_palette_blit_frame_buf];
+        lea rdx, [rip + swm_palette_blit_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;
+        syscall;
+
+        // BLIT row 2: "quit-wm" (cmd_id 3, names offset 80).
+        mov rax, 0x13;
+        mov rcx, 1;
+        shl rcx, 8;
+        or rax, rcx;
+        mov rcx, 56;
+        shl rcx, 32;
+        or rax, rcx;
+        mov [rip + swm_palette_blit_frame_buf + 0], rax;
+        mov rax, 0xFFFFFFFF00000001;
+        mov [rip + swm_palette_blit_frame_buf + 8], rax;
+        mov rax, 2;
+        mov [rip + swm_palette_blit_frame_buf + 16], rax;
+        mov rax, [rip + _palette_names + 80];
+        mov [rip + swm_palette_blit_frame_buf + 24], rax;
+        mov rax, [rip + _palette_names + 88];
+        mov [rip + swm_palette_blit_frame_buf + 32], rax;
+        mov rax, [rip + _palette_names + 96];
+        mov [rip + swm_palette_blit_frame_buf + 40], rax;
+        mov rax, [rip + _palette_names + 104];
+        mov [rip + swm_palette_blit_frame_buf + 48], rax;
+        mov rax, [rip + _palette_names + 112];
+        mov [rip + swm_palette_blit_frame_buf + 56], rax;
+        mov rdi, r9;
+        lea rsi, [rip + swm_palette_blit_frame_buf];
+        lea rdx, [rip + swm_palette_blit_frame_buf + 8];
+        mov r10, 56;
+        mov rax, 42;
+        syscall;
+
+        xor rax, rax;
+        ret;
+
+      po_lookup_fail:
+        mov rax, 0xFFFFFFFFFFFFFFF8;        // SWM_PALETTE_ERR_LOOKUP
+        ret;
+
+      po_send_fail:
+        mov rax, 0xFFFFFFFFFFFFFFF7;        // SWM_PALETTE_ERR_SEND
+        ret;
+      }
+    }
+
+  // palette_dispatch(cmd_id) -> per-branch result | PALETTE_ERR_UNKNOWN_CMD
+  //   CLOSE_FOCUSED (1): Tiling::tiling_focus_close's result, verbatim.
+  //   SWAP_COLUMNS  (2): swap swm_tile_ids[0]/[1] (no-op if count < 2),
+  //     re-emit via Tiling::tiling_emit_moves (best-effort); returns 0.
+  //   QUIT_WM       (3): records swm_palette_quit_requested=1; returns 0.
+  // Every known branch closes the palette (swm_palette_open=0) and
+  // records swm_palette_last_action=cmd_id BEFORE its own downstream
+  // call -- see module header "Command table + mock dispatch signal".
+  pub let palette_dispatch : (u64) -> u64 !{mem, sysreg} @{} =
+    fn (cmd_id: u64) -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "R102.M4-003 (#11) / R102.M3-002 (#8) PaletteDispatch. push rbx once at entry (SysV rsp%16==8 -> %16==0) purely for CALL-site alignment -- both taken branches that reach a nested `call` (pd_close -> tiling_focus_close, pd_swap's count>=2 path -> tiling_emit_moves) do so at this same stack depth, mutually exclusively. Each branch records swm_palette_last_action = cmd_id via a plain qword store BEFORE its own downstream call, per module header. pd_close: `call tiling_focus_close`, park its rax in rbx, clear swm_palette_open, restore rax=rbx, pop, ret. pd_swap: read swm_tile_count; count<2 skips the swap entirely (falls through to the shared close-out); else swap swm_tile_ids[0]/[1] via two plain qword loads/stores through rax/rcx (Tiling's own dense-array layout, referenced directly -- this repo's flat cross-module symbol convention, same as src/main.pdx calling Tiling/Decoration/Focus functions by bare name), then `call tiling_emit_moves` (best-effort, return discarded). pd_quit: sets swm_palette_quit_requested=1 (placeholder -- no real recv loop consumes it yet, module header). Unknown cmd_id (checked first, before any push) returns PALETTE_ERR_UNKNOWN_CMD without touching swm_palette_open/last_action. Labels prefixed pd_.",
+      block: {
+        cmp rdi, 1;                         // PALETTE_CMD_CLOSE_FOCUSED
+        je pd_close;
+        cmp rdi, 2;                         // PALETTE_CMD_SWAP_COLUMNS
+        je pd_swap;
+        cmp rdi, 3;                         // PALETTE_CMD_QUIT_WM
+        je pd_quit;
+
+        mov rax, 0xFFFFFFFFFFFFFFF6;        // PALETTE_ERR_UNKNOWN_CMD
+        ret;
+
+      pd_close:
+        mov rax, 1;
+        mov [rip + swm_palette_last_action], rax;
+        push rbx;
+        call tiling_focus_close;
+        mov rbx, rax;
+        xor rax, rax;
+        mov [rip + swm_palette_open], rax;
+        mov rax, rbx;
+        pop rbx;
+        ret;
+
+      pd_swap:
+        mov rax, 2;
+        mov [rip + swm_palette_last_action], rax;
+
+        mov rax, [rip + swm_tile_count];
+        cmp rax, 2;
+        jl pd_swap_skip;
+
+        lea r10, [rip + swm_tile_ids];
+        mov rax, [r10 + 0];
+        mov rcx, [r10 + 8];
+        mov [r10 + 0], rcx;
+        mov [r10 + 8], rax;
+
+        push rbx;
+        call tiling_emit_moves;
+        pop rbx;
+
+      pd_swap_skip:
+        xor rax, rax;
+        mov [rip + swm_palette_open], rax;
+        xor rax, rax;
+        ret;
+
+      pd_quit:
+        mov rax, 3;
+        mov [rip + swm_palette_last_action], rax;
+        mov rax, 1;
+        mov [rip + swm_palette_quit_requested], rax;
+        xor rax, rax;
+        mov [rip + swm_palette_open], rax;
+        xor rax, rax;
+        ret;
+      }
+    }
+
+}
