@@ -1,5 +1,68 @@
 # svc-wm — CHANGELOG
 
+## 1.0.0-src — 2026-09-13 (Wave YY: M3-002 Alt+Space palette, M4 smokes, M5 signed release)
+
+**Major bump closing the five-issue Wave YY cohort (#8, #9, #10, #11,
+#12):** the last M3 item (Alt+Space command palette), the full M4 smoke
+trio (tile arithmetic, focus cycle, palette dispatch), and the M5
+signed-1.0.0-release closer (source form; dual-sign pass deferred to
+release-time key material, per this org's standing convention).
+
+### Added
+
+- **`src/palette.pdx`** — R102.M3-002 (#8). New `Palette` module:
+  `palette_open` positions a centered 200x100 overlay via
+  svc-compositor's frozen `WM_PLACE_WINDOW = 0x10`, then best-effort
+  blits the 3-command menu (swap-columns, close-focused, quit-wm) over
+  a forward-declared `WM_BLIT = 0x13` (svc-compositor's caps.decl v1.2.0
+  freezes no BLIT op — same not-yet-frozen-upstream posture
+  `src/tiling.pdx` already established for `WM_CLOSE_WINDOW`).
+  `palette_dispatch(cmd_id)` routes close-focused to
+  `Tiling::tiling_focus_close`, swap-columns to an in-place
+  `swm_tile_ids[0]`/`[1]` swap + `Tiling::tiling_emit_moves`, and
+  quit-wm to a placeholder `swm_palette_quit_requested` intent flag
+  (no real recv loop consumes it yet); every known command closes the
+  palette. `Main::main_dispatch` gains an `ALT_SPACE_PALETTE` (0x0A)
+  branch routing to `palette_open`. Closes #8.
+- **`tests/svc_wm_tile_smoke.pdx`** — REAL assertion witness for #9:
+  `tiling_divide(1920,3)==640`, `tiling_divide(1920,4)==480`,
+  `tiling_divide(100,3)==33` with the 1px remainder pinned by
+  subtraction (not redistributed — `tiling_recompute` does not do
+  that). Publishes `svc-wm tile-math ok\n` (20 bytes). Closes #9.
+- **`tests/svc_wm_focus_cycle_smoke.pdx`** — REAL assertion witness for
+  #10: attaches 3 fake surfaces, asserts `tiling_focus_advance`'s
+  4-call index sequence is 1,2,0,1. Publishes
+  `svc-wm focus-cycle ok\n` (22 bytes). Closes #10.
+- **`tests/svc_wm_palette_smoke.pdx`** — REAL assertion witness for
+  #11: `palette_dispatch(1)` (close-focused) records the mock-dispatch
+  signal (`swm_palette_last_action==1`), closes the palette
+  (`swm_palette_open==0`), and returns `Tiling::SWM_TILE_ERR_LOOKUP`
+  deterministically (no live `svc.compositor` in this single-process
+  smoke — same boundary `probe_register.pdx` documents). Publishes
+  `svc-wm palette-dispatch ok\n` (27 bytes). Closes #11.
+
+### Changed
+
+- **`caps.decl`** — outbound-ordinal audit-trail block gains the
+  `WM_BLIT = 0x13` forward declaration (#8).
+- **`design/wire-protocol.md`** — §3 documents `WM_BLIT = 0x13`; §4
+  milestone provenance gains M3-002/#8, M4-001..003/#9-#11, and
+  M5-001/#12.
+- **`STATUS.md`** — M3-002/M4/M5 marked landed; "What v1.0.0-src does
+  NOT ship" replaces the v0.6.0 list, adding the palette-specific gaps
+  (pseudo `KIND_SURFACE`, placeholder quit signal).
+- **`README.md`** — milestone/scaffolding notes updated for the
+  v1.0.0-src landing.
+- **`manifest.pdxsig`** — artifact set gains `src/palette.pdx` and the
+  three new smoke tests; `package-version`/`package-release` bumped to
+  1.0.0; `source-tag` set to `v1.0.0-src`. Dual-signature block remains
+  the unsigned PLACEHOLDER this org's M5 convention documents — the
+  live dual-sign pass is a release-time step outside this commit.
+
+Closes paideia-os/svc-wm#8. Closes paideia-os/svc-wm#9.
+Closes paideia-os/svc-wm#10. Closes paideia-os/svc-wm#11.
+Closes paideia-os/svc-wm#12.
+
 ## 0.6.0 — 2026-09-13 (Wave VV: M2-003 Alt+Tab/Alt+F4 dispatch, M3-001 real KIND_INPUT_FOCUS mint)
 
 **Minor bump closing the two-issue Wave VV cohort (#6, #7):** the last

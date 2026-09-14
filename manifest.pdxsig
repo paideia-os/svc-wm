@@ -1,4 +1,4 @@
-# svc-wm v0.6.0 -- release manifest (source form)
+# svc-wm v1.0.0-src -- release manifest (source form)
 #
 # This is the human-readable source form of `manifest.pdxsig`. At a
 # signed release, the release tool at pkgs.paideia-os mirror-push time
@@ -10,13 +10,15 @@
 # the ML-DSA-65 secret key. Format mirrors svc-compositor's own
 # `release/manifest.pdxsig.txt` (this org's Wave F/Y closer template).
 #
-# v0.6.0 is an M2/M3-partial scaffold checkpoint, NOT the dual-signed
-# 1.0.0 release this repo's README documents as the M5 milestone target
-# ("Repo shape mirrors R100 satellites: ... dual-signed manifest.pdxsig
-# at 1.0.0"). This source-form manifest lands at repo root starting at
-# M1-001 (#1) per that milestone's scaffold ask, and is refreshed at
-# every subsequent release tag; the [signatures] block below stays
-# PLACEHOLDER until the real M5 dual-sign pass.
+# v1.0.0-src is the M5 milestone closer (#12) in SOURCE FORM: every
+# artifact and cap-kind/syscall contract below is final for 1.0.0, but
+# the [signatures] block still stays PLACEHOLDER -- the live dual-sign
+# pass (Ed25519 || ML-DSA-65 over this manifest, once every <BLAKE3-*>
+# hash below is recomputed at the release tag) is a release-time step
+# performed with live key material outside this repo/commit, per this
+# org's standing M5 convention (see svc-compositor's own
+# release/RELEASE-1.0.0.md §3). This source-form manifest lands at repo
+# root starting at M1-001 (#1) and is refreshed at every release tag.
 #
 # Reference:
 #   design/paideia-as/v0.20-issue-1025-pq-signing.md -- Hybrid,
@@ -26,13 +28,13 @@
 format-version:      1
 manifest-schema:     paideia-manifest-pdxsig@1
 package-name:        svc-wm
-package-version:     0.6.0
-package-release:     R102-M2c-M3a
+package-version:     1.0.0
+package-release:     R102-M5-1.0.0
 package-kind:        service
 package-license:     MIT
 source-repo:         https://github.com/paideia-os/svc-wm
-source-commit:       <TAG-v0.6.0-COMMIT-SHA>   # release tool fills in
-source-tag:          v0.6.0
+source-commit:       <TAG-v1.0.0-src-COMMIT-SHA>   # release tool fills in
+source-tag:          v1.0.0-src
 
 # ---------------------------------------------------------------
 # Artifact set -- every file the v0.6.0 tag ships. Hash discipline is
@@ -46,6 +48,7 @@ src/main.pdx                              blake3-256 = <BLAKE3-main.pdx>
 src/tiling.pdx                            blake3-256 = <BLAKE3-tiling.pdx>
 src/decoration.pdx                        blake3-256 = <BLAKE3-decoration.pdx>
 src/focus.pdx                             blake3-256 = <BLAKE3-focus.pdx>
+src/palette.pdx                           blake3-256 = <BLAKE3-palette.pdx>
 
 [artifacts.tests]
 tests/README.md                           blake3-256 = <BLAKE3-tests-README.md>
@@ -54,6 +57,9 @@ tests/probe_wire_protocol.pdx             blake3-256 = <BLAKE3-probe_wire_protoc
 tests/probe_register.pdx                  blake3-256 = <BLAKE3-probe_register.pdx>
 tests/probe_tiling.pdx                    blake3-256 = <BLAKE3-probe_tiling.pdx>
 tests/probe_decoration.pdx                blake3-256 = <BLAKE3-probe_decoration.pdx>
+tests/svc_wm_tile_smoke.pdx               blake3-256 = <BLAKE3-svc_wm_tile_smoke.pdx>
+tests/svc_wm_focus_cycle_smoke.pdx        blake3-256 = <BLAKE3-svc_wm_focus_cycle_smoke.pdx>
+tests/svc_wm_palette_smoke.pdx            blake3-256 = <BLAKE3-svc_wm_palette_smoke.pdx>
 
 [artifacts.meta]
 caps.decl                                 blake3-256 = <BLAKE3-caps.decl>
@@ -76,7 +82,10 @@ CHANGELOG.md                              blake3-256 = <BLAKE3-CHANGELOG.md>
 [not-linked]
 # Named as a wire-protocol peer in this repo's own docs but not a link
 # dependency.
-svc-compositor            # IPC peer only (svc.compositor.wm control endpoint)
+svc-compositor            # IPC peer only (svc.compositor.wm control endpoint);
+                           # WM_CLOSE_WINDOW (0x12) and WM_BLIT (0x13) are
+                           # svc-wm's own forward declarations, not yet frozen
+                           # in svc-compositor's own caps.decl (v1.2.0)
 
 # ---------------------------------------------------------------
 # Substrate contracts.

@@ -79,6 +79,7 @@ module Main = structure {
   pub let SWM_REPLY_REGISTER_OK   : u64 = 0x81
   pub let SWM_REQ_ALT_TAB         : u64 = 0x08
   pub let SWM_REQ_ALT_F4          : u64 = 0x09
+  pub let SWM_REQ_ALT_SPACE_PALETTE : u64 = 0x0A
 
   // main_dispatch's own sentinel for an op it does not (yet) handle.
   pub let SWM_MAIN_DISPATCH_UNHANDLED : u64 = 0xFFFFFFFFFFFFFFFF
@@ -218,12 +219,14 @@ module Main = structure {
   //     SWM_TILE_ERR_NOTFOUND passthrough.
   //   ALT_F4 (0x09): close the focused surface (Tiling::
   //     tiling_focus_close). Returns that call's result verbatim.
+  //   ALT_SPACE_PALETTE (0x0A): open the command palette overlay
+  //     (Palette::palette_open, #8). Returns that call's result verbatim.
   //   anything else: SWM_MAIN_DISPATCH_UNHANDLED.
   pub let main_dispatch : (u64) -> u64 !{mem, sysreg} @{} =
     fn (op: u64) -> unsafe {
       effects: {mem, sysreg},
       capabilities: {},
-      justification: "R102.M2-003 (#6) MainDispatch. push rbx once (entry rsp%16==8 -> %16==0) purely for CALL-site alignment -- every branch below fires at most two nested `call`s back-to-back with no intervening push/pop, so the single pad holds throughout; rbx also doubles as the ALT_TAB branch's carried return value (tiling_focus_advance's result) across the second call, safe because both decoration_on_focus_change and focus_mint save/restore every callee-saved register they touch before returning (decoration_on_focus_change pushes rbx/r12/r13 itself; focus_mint is a leaf touching only caller-save regs). ALT_TAB: `call tiling_focus_advance`; `cmp rax,0; jl` skips the decorate+mint pair on SWM_TILE_ERR_NOTFOUND (any negative return -- the module's only error path) rather than comparing against the exact sentinel value, mirroring this org's established 'any negative is the error class' idiom; on a real surface_id, `mov rdi,rbx; call decoration_on_focus_change` then `mov rdi,rbx; call focus_mint` (both re-read rbx since each call's own rdi setup happens fresh). ALT_F4: `call tiling_focus_close` directly, no arguments. Unhandled op: SWM_MAIN_DISPATCH_UNHANDLED (-1). Every exit path pops rbx before returning. Labels prefixed wmd_.",
+      justification: "R102.M2-003 (#6) / R102.M3-002 (#8) MainDispatch. push rbx once (entry rsp%16==8 -> %16==0) purely for CALL-site alignment -- every branch below fires at most two nested `call`s back-to-back with no intervening push/pop, so the single pad holds throughout; rbx also doubles as the ALT_TAB branch's carried return value (tiling_focus_advance's result) across the second call, safe because both decoration_on_focus_change and focus_mint save/restore every callee-saved register they touch before returning (decoration_on_focus_change pushes rbx/r12/r13 itself; focus_mint is a leaf touching only caller-save regs). ALT_TAB: `call tiling_focus_advance`; `cmp rax,0; jl` skips the decorate+mint pair on SWM_TILE_ERR_NOTFOUND (any negative return -- the module's only error path) rather than comparing against the exact sentinel value, mirroring this org's established 'any negative is the error class' idiom; on a real surface_id, `mov rdi,rbx; call decoration_on_focus_change` then `mov rdi,rbx; call focus_mint` (both re-read rbx since each call's own rdi setup happens fresh). ALT_F4: `call tiling_focus_close` directly, no arguments. ALT_SPACE_PALETTE: `call palette_open` directly, no arguments -- palette_open is itself a leaf (src/palette.pdx), so this call site needs nothing beyond the same entry-time push. Unhandled op: SWM_MAIN_DISPATCH_UNHANDLED (-1). Every exit path pops rbx before returning. Labels prefixed wmd_.",
       block: {
         push rbx;
 
@@ -231,9 +234,16 @@ module Main = structure {
         je wmd_alt_tab;
         cmp rdi, 0x09;                      // SWM_REQ_ALT_F4
         je wmd_alt_f4;
+        cmp rdi, 0x0A;                      // SWM_REQ_ALT_SPACE_PALETTE
+        je wmd_alt_space;
 
         pop rbx;
         mov rax, 0xFFFFFFFFFFFFFFFF;        // SWM_MAIN_DISPATCH_UNHANDLED
+        ret;
+
+      wmd_alt_space:
+        call palette_open;
+        pop rbx;
         ret;
 
       wmd_alt_tab:

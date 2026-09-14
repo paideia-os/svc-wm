@@ -1,0 +1,90 @@
+// tests/svc_wm_palette_smoke.pdx -- svc-wm v1.0.0 (Wave YY: R102.M4-003, #11)
+// SvcWmPaletteSmoke: REAL assertion witness over Palette::palette_dispatch.
+//
+// Attaches one fake surface (id 500) so palette_dispatch's close-focused
+// branch drives Tiling::tiling_focus_close past its empty-list guard and
+// attempts a REAL sys_svc_lookup("svc.compositor") -- this single-process
+// smoke has no live compositor registered, so that lookup deterministically
+// fails and tiling_focus_close returns SWM_TILE_ERR_LOOKUP. Asserting that
+// exact deterministic code (rather than skipping the call, or fabricating
+// a live round trip) matches this repo's honest-witness convention --
+// see tests/README.md's probe_register.pdx precedent for the same
+// single-process/no-live-compositor boundary.
+//
+// The independently-observable "mock CLOSE sent" side effect --
+// Palette::swm_palette_last_action recording cmd_id=1
+// (PALETTE_CMD_CLOSE_FOCUSED) BEFORE that downstream call -- is asserted
+// separately from the call's own outcome, per src/palette.pdx's module
+// header. swm_palette_open == 0 post-dispatch is asserted too (every
+// known-cmd branch closes the palette regardless of its downstream
+// call's result).
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held); the SWM_TILE_ERR_LOOKUP sentinel
+// (0xFFFFFFFFFFFFFFFC) is loaded into r11 before the compare rather than
+// compared directly against the wide immediate (this org's own
+// "cmp-wide-imm without r11-load" encoder pitfall). One padding push at
+// entry, no other push/pop until final cleanup, so rsp%16==0 holds at
+// every nested `call` site. Labels prefixed `swp_`.
+
+module SvcWmPaletteSmoke = structure {
+
+  pub let svc_wm_palette_smoke_fp     : [u8; 28] = "svc-wm palette-dispatch ok\n\0"
+  pub let svc_wm_palette_smoke_fp_len : u64      = 27
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M4-003 (#11): SvcWmPaletteSmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0). `call tiling_attach(500)` seeds one fake surface so the close-focused dispatch below exercises tiling_focus_close's real lookup-attempt path instead of its empty-list short circuit. `mov rdi,1 (PALETTE_CMD_CLOSE_FOCUSED); call palette_dispatch`; its return is compared against Tiling::SWM_TILE_ERR_LOOKUP via an r11-loaded register-to-register cmp (this org's wide-immediate-cmp pitfall). Two follow-up loads read back `[rip + swm_palette_last_action]` (expect 1) and `[rip + swm_palette_open]` (expect 0) as the independently-observable mock-dispatch signals. Every check uses the 'cmp; je <skip>; mov rbx,<code>' first-failure idiom. Final `cmp rbx,0; jne swp_fail` gates the fingerprint write. Labels prefixed swp_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 500;
+        call tiling_attach;
+        cmp rax, 0;
+        je swp_at_ok;
+        mov rbx, 1;
+      swp_at_ok:
+
+        mov rdi, 1;                         // PALETTE_CMD_CLOSE_FOCUSED
+        call palette_dispatch;
+        mov r11, 0xFFFFFFFFFFFFFFFC;        // Tiling::SWM_TILE_ERR_LOOKUP
+        cmp rax, r11;
+        je swp_ret_ok;
+        mov rbx, 2;
+      swp_ret_ok:
+
+        mov rax, [rip + swm_palette_last_action];
+        cmp rax, 1;
+        je swp_act_ok;
+        mov rbx, 3;
+      swp_act_ok:
+
+        mov rax, [rip + swm_palette_open];
+        cmp rax, 0;
+        je swp_open_ok;
+        mov rbx, 4;
+      swp_open_ok:
+
+        cmp rbx, 0;
+        jne swp_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_palette_smoke_fp];
+        mov rdx, 27;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      swp_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

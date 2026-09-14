@@ -1,0 +1,100 @@
+// tests/svc_wm_focus_cycle_smoke.pdx -- svc-wm v1.0.0 (Wave YY: R102.M4-002, #10)
+// SvcWmFocusCycleSmoke: REAL assertion witness over
+// Tiling::tiling_focus_advance.
+//
+// tiling_focus_advance is a pure in-process index-advance (effects:
+// {mem} only, no IPC -- see src/tiling.pdx's own header), so this smoke
+// exercises the real function directly rather than a mock compositor
+// stream: attach 3 fake surfaces (ids 100/101/102, fresh-boot default
+// swm_tile_focus_index == 0), then call tiling_focus_advance 4 times
+// and assert swm_tile_focus_index reads back 1, 2, 0, 1 -- the
+// division-free modulo-3 wraparound sequence.
+//
+// paideia-as encoder notes: rbx accumulates a "first failure" code
+// (0 = all assertions held), same idiom as tests/probe_tiling.pdx; one
+// padding push at entry, no other push/pop until final cleanup, so
+// rsp%16==0 holds at every nested `call` site. Labels prefixed `swfc_`.
+
+module SvcWmFocusCycleSmoke = structure {
+
+  pub let svc_wm_focus_cycle_smoke_fp     : [u8; 23] = "svc-wm focus-cycle ok\n\0"
+  pub let svc_wm_focus_cycle_smoke_fp_len : u64      = 22
+
+  pub let run : () -> u64 !{mem, sysreg} @{} =
+    fn () -> unsafe {
+      effects: {mem, sysreg}, capabilities: {},
+      justification: "svc-wm.R102.M4-002 (#10): SvcWmFocusCycleSmoke::run real-assertion witness. push rbx once at entry (rsp%16==8 -> %16==0), then `call tiling_attach` for surface_ids 100/101/102 (each followed by the 'cmp rax,0; je <skip>; mov rbx,<code>' first-failure idiom). Four `call tiling_focus_advance` sites follow, each immediately re-reading `[rip + swm_tile_focus_index]` into rax (rather than trusting the call's own return value, which is the surface_id at that index, not the index itself) and comparing against the expected wraparound sequence 1,2,0,1 for a fixed count=3. Final `cmp rbx,0; jne swfc_fail` gates the fingerprint write on every assertion having held. Labels prefixed swfc_.",
+      block: {
+        push rbx;
+        xor rbx, rbx;
+
+        mov rdi, 100;
+        call tiling_attach;
+        cmp rax, 0;
+        je swfc_a1_ok;
+        mov rbx, 1;
+      swfc_a1_ok:
+
+        mov rdi, 101;
+        call tiling_attach;
+        cmp rax, 0;
+        je swfc_a2_ok;
+        mov rbx, 2;
+      swfc_a2_ok:
+
+        mov rdi, 102;
+        call tiling_attach;
+        cmp rax, 0;
+        je swfc_a3_ok;
+        mov rbx, 3;
+      swfc_a3_ok:
+
+        call tiling_focus_advance;
+        mov rax, [rip + swm_tile_focus_index];
+        cmp rax, 1;
+        je swfc_i1_ok;
+        mov rbx, 4;
+      swfc_i1_ok:
+
+        call tiling_focus_advance;
+        mov rax, [rip + swm_tile_focus_index];
+        cmp rax, 2;
+        je swfc_i2_ok;
+        mov rbx, 5;
+      swfc_i2_ok:
+
+        call tiling_focus_advance;
+        mov rax, [rip + swm_tile_focus_index];
+        cmp rax, 0;
+        je swfc_i3_ok;
+        mov rbx, 6;
+      swfc_i3_ok:
+
+        call tiling_focus_advance;
+        mov rax, [rip + swm_tile_focus_index];
+        cmp rax, 1;
+        je swfc_i4_ok;
+        mov rbx, 7;
+      swfc_i4_ok:
+
+        cmp rbx, 0;
+        jne swfc_fail;
+
+        mov rdi, 1;
+        lea rsi, [rip + svc_wm_focus_cycle_smoke_fp];
+        mov rdx, 22;
+        mov rax, 1;
+        syscall;
+
+        pop rbx;
+        xor rax, rax;
+        ret;
+
+      swfc_fail:
+        mov rax, rbx;
+        pop rbx;
+        ret;
+      }
+    }
+
+}

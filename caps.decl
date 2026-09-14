@@ -109,3 +109,18 @@ reply.ERROR                     = 0xFF
 #                                                 caps.decl; see
 #                                                 src/tiling.pdx's module
 #                                                 header "Wave VV addendum".
+#   svc.compositor.wm  WM_BLIT         = 0x13  -- svc-wm's OWN forward-
+#                                                 declared command-palette
+#                                                 label draw directive
+#                                                 (src/palette.pdx,
+#                                                 palette_open,
+#                                                 R102.M3-002 #8) -- NOT
+#                                                 yet frozen in
+#                                                 svc-compositor's own
+#                                                 caps.decl (v1.2.0 there
+#                                                 declares only
+#                                                 0x01/0x02/0x10/0x11/
+#                                                 0x20..0x23); see
+#                                                 src/palette.pdx's module
+#                                                 header "Forward-declared
+#                                                 ordinals".

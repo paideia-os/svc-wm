@@ -201,12 +201,20 @@ svc-wm rides two ordinals already frozen by `svc-compositor`'s own
   shape today so no further svc-wm change is needed once the peer
   freezes it; see `src/tiling.pdx`'s module header "Wave VV addendum"
   for the full documented-risk rationale.
+- **`WM_BLIT = 0x13`** -- carries svc-wm's command-palette label draw
+  directive (`src/palette.pdx`, `palette_open`, R102.M3-002 #8):
+  `surface_id:u64, row_index:u64, name:[u8;40]`, exactly 56 bytes. Like
+  `WM_CLOSE_WINDOW`, this is **svc-wm's OWN forward declaration**, not
+  yet frozen in svc-compositor's `caps.decl` (v1.2.0 there declares only
+  `0x01/0x02/0x10/0x11/0x20..0x23`); see `src/palette.pdx`'s module
+  header "Forward-declared ordinals".
 
 `WM_PLACE_WINDOW` and `WM_SET_FOCUS` are NOT svc-wm's own frozen
 ordinals (they belong to svc-compositor's protocol) and are not
-re-declared in this repo's `caps.decl`; `WM_CLOSE_WINDOW` is listed here
-for audit-trail purposes even though it is svc-wm's own not-yet-frozen
-proposal, since it rides the same `svc.compositor.wm` control endpoint.
+re-declared in this repo's `caps.decl`; `WM_CLOSE_WINDOW`/`WM_BLIT` are
+listed here for audit-trail purposes even though both are svc-wm's own
+not-yet-frozen proposals, since they ride the same `svc.compositor.wm`
+control endpoint.
 
 ## 4. Milestone provenance
 
@@ -223,3 +231,8 @@ proposal, since it rides the same `svc.compositor.wm` control endpoint.
 - M3-001 (#7): `src/focus.pdx` real `KIND_INPUT_FOCUS` mint
   (`sys_cap_mint`, floor-only sysno 5 pending the documented kernel
   arity-mismatch fix).
+- M3-002 (#8): `src/palette.pdx` Alt+Space command palette; forward-
+  declared `WM_BLIT = 0x13` emission.
+- M4-001..M4-003 (#9, #10, #11): `tests/svc_wm_tile_smoke.pdx`,
+  `tests/svc_wm_focus_cycle_smoke.pdx`, `tests/svc_wm_palette_smoke.pdx`.
+- M5-001 (#12): signed 1.0.0 release.
